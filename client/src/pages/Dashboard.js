@@ -22,6 +22,14 @@ const Dashboard = () => {
     getUser();
     getConversations();
     getClients(1, '');
+    
+    // Refrescar conversaciones cada 30 segundos para detectar nuevas respuestas
+    const intervalId = setInterval(() => {
+      getConversations();
+    }, 30000);
+    
+    // Limpiar el intervalo cuando el componente se desmonte
+    return () => clearInterval(intervalId);
   }, []);
 
   const getUser = async () => {
@@ -34,14 +42,36 @@ const Dashboard = () => {
       // Obtener el user_id del usuario autenticado
       const { data: { user } } = await supabase.auth.getUser();
       
-      const { data, error } = await supabase
+      // Obtener conversaciones con información de mensajes
+      const { data: conversationsData, error: convError } = await supabase
         .from('conversations')
         .select('*')
-        .eq('user_id', user.id) // Filtrar por user_id
+        .eq('user_id', user.id)
         .order('updated_at', { ascending: false });
       
-      if (error) throw error;
-      setConversations(data || []);
+      if (convError) throw convError;
+      
+      // Para cada conversación, verificar si hay mensajes del asistente (respuestas)
+      const conversationsWithStatus = await Promise.all(
+        (conversationsData || []).map(async (conv) => {
+          const { data: messages } = await supabase
+            .from('messages')
+            .select('sender_type, created_at')
+            .eq('conversation_id', conv.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+          
+          const hasResponse = messages && messages.length > 0 && messages[0].sender_type === 'assistant';
+          
+          return {
+            ...conv,
+            hasResponse,
+            lastMessageTime: messages && messages.length > 0 ? messages[0].created_at : conv.updated_at
+          };
+        })
+      );
+      
+      setConversations(conversationsWithStatus);
     } catch (error) {
       console.error('Error fetching conversations:', error);
     } finally {
@@ -363,6 +393,7 @@ const Dashboard = () => {
             conversations={conversations}
             loading={loading}
             onOpenConversation={handleOpenConversation}
+            onRefresh={getConversations}
           />
         ) : (
           <ClientsTab 
@@ -400,7 +431,15 @@ const Dashboard = () => {
 };
 
 // Componente de Tab de Conversaciones
-const ConversationsTab = ({ conversations, loading, onOpenConversation }) => {
+const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh }) => {
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
+  
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await onRefresh();
+    setTimeout(() => setIsRefreshing(false), 500);
+  };
+  
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -425,8 +464,39 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation }) => {
     );
   }
 
+  const conversationsWithResponses = conversations.filter(c => c.hasResponse).length;
+
   return (
     <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+      {/* Header con botón de refrescar */}
+      <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200 flex justify-between items-center">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 flex items-center space-x-2">
+            <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <span>Conversaciones</span>
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            {conversationsWithResponses > 0 && (
+              <span className="font-semibold text-green-600">
+                {conversationsWithResponses} con respuesta{conversationsWithResponses !== 1 ? 's' : ''}
+              </span>
+            )}
+            {conversationsWithResponses === 0 && 'Sin respuestas nuevas'}
+          </p>
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2 disabled:opacity-50"
+        >
+          <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
+        </button>
+      </div>
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
@@ -447,19 +517,37 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation }) => {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {conversations.map((conversation) => (
-              <tr key={conversation.id} className="hover:bg-blue-50 transition-all duration-200">
+              <tr key={conversation.id} className={`transition-all duration-200 ${
+                conversation.hasResponse 
+                  ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
+                  : 'hover:bg-blue-50'
+              }`}>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="flex items-center">
-                    <div className="flex-shrink-0 h-12 w-12 bg-gradient-to-br from-blue-400 to-blue-600 rounded-xl flex items-center justify-center shadow-md">
+                    <div className={`flex-shrink-0 h-12 w-12 rounded-xl flex items-center justify-center shadow-md relative ${
+                      conversation.hasResponse
+                        ? 'bg-gradient-to-br from-green-400 to-green-600'
+                        : 'bg-gradient-to-br from-blue-400 to-blue-600'
+                    }`}>
                       <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                       </svg>
+                      {conversation.hasResponse && (
+                        <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></div>
+                      )}
                     </div>
-                    <div className="ml-4">
-                      <div className="text-sm font-semibold text-gray-900">
-                        {conversation.title || 'Sin título'}
+                    <div className="ml-4 flex-1">
+                      <div className="flex items-center space-x-2">
+                        <div className="text-sm font-semibold text-gray-900">
+                          {conversation.title || 'Sin título'}
+                        </div>
+                        {conversation.hasResponse && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500 text-white shadow-sm animate-pulse">
+                            ¡Respondió!
+                          </span>
+                        )}
                       </div>
-                      <div className="text-xs text-gray-500 flex items-center space-x-1">
+                      <div className="text-xs text-gray-500 flex items-center space-x-1 mt-1">
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                         </svg>
