@@ -16,6 +16,7 @@ const Dashboard = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [loadingMoreClients, setLoadingMoreClients] = useState(false);
   const [totalClients, setTotalClients] = useState(0);
+  const [filterResponses, setFilterResponses] = useState(false); // Nuevo estado para filtro
   const CLIENTS_PER_PAGE = 10;
 
   useEffect(() => {
@@ -51,17 +52,37 @@ const Dashboard = () => {
       
       if (convError) throw convError;
       
-      // Para cada conversación, verificar si hay mensajes del asistente (respuestas)
+      // Para cada conversación, verificar si hay mensajes respondidos
       const conversationsWithStatus = await Promise.all(
         (conversationsData || []).map(async (conv) => {
+          // Buscar mensajes con Respondido = true (respuestas del cliente)
           const { data: messages } = await supabase
             .from('messages')
-            .select('sender_type, created_at')
+            .select('Respondido, sender_type, created_at')
             .eq('conversation_id', conv.id)
+            .eq('Respondido', true)
             .order('created_at', { ascending: false })
             .limit(1);
           
-          const hasResponse = messages && messages.length > 0 && messages[0].sender_type === 'assistant';
+          // También verificar por sender_type = 'Asistente' como alternativa
+          if (!messages || messages.length === 0) {
+            const { data: assistantMessages } = await supabase
+              .from('messages')
+              .select('sender_type, created_at')
+              .eq('conversation_id', conv.id)
+              .eq('sender_type', 'Asistente')
+              .order('created_at', { ascending: false })
+              .limit(1);
+            
+            const hasResponse = assistantMessages && assistantMessages.length > 0;
+            return {
+              ...conv,
+              hasResponse,
+              lastMessageTime: assistantMessages && assistantMessages.length > 0 ? assistantMessages[0].created_at : conv.updated_at
+            };
+          }
+          
+          const hasResponse = messages && messages.length > 0;
           
           return {
             ...conv,
@@ -70,6 +91,15 @@ const Dashboard = () => {
           };
         })
       );
+      
+      // Log para depuración
+      const withResponses = conversationsWithStatus.filter(c => c.hasResponse);
+      console.log('Total conversaciones:', conversationsWithStatus.length);
+      console.log('Con respuestas:', withResponses.length);
+      console.log('Detalles:', conversationsWithStatus.map(c => ({
+        id: c.id,
+        hasResponse: c.hasResponse
+      })));
       
       setConversations(conversationsWithStatus);
     } catch (error) {
@@ -394,6 +424,8 @@ const Dashboard = () => {
             loading={loading}
             onOpenConversation={handleOpenConversation}
             onRefresh={getConversations}
+            filterResponses={filterResponses}
+            onToggleFilter={() => setFilterResponses(!filterResponses)}
           />
         ) : (
           <ClientsTab 
@@ -431,7 +463,7 @@ const Dashboard = () => {
 };
 
 // Componente de Tab de Conversaciones
-const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh }) => {
+const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   
   const handleRefresh = async () => {
@@ -439,6 +471,11 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
     await onRefresh();
     setTimeout(() => setIsRefreshing(false), 500);
   };
+  
+  // Filtrar conversaciones según el estado del filtro
+  const filteredConversations = filterResponses 
+    ? conversations.filter(c => c.hasResponse)
+    : conversations;
   
   if (loading) {
     return (
@@ -448,7 +485,7 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
     );
   }
 
-  if (conversations.length === 0) {
+  if (filteredConversations.length === 0) {
     return (
       <div className="bg-white rounded-xl shadow-md border border-gray-100 text-center py-16 px-6">
         <div className="max-w-sm mx-auto">
@@ -457,8 +494,22 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
           </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">No hay conversaciones</h3>
-          <p className="text-sm text-gray-500">Las conversaciones aparecerán aquí cuando se reciban mensajes de tus clientes.</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            {filterResponses ? 'No hay conversaciones con respuestas' : 'No hay conversaciones'}
+          </h3>
+          <p className="text-sm text-gray-500">
+            {filterResponses 
+              ? 'No hay conversaciones donde los clientes hayan respondido. Desactiva el filtro para ver todas las conversaciones.'
+              : 'Las conversaciones aparecerán aquí cuando se reciban mensajes de tus clientes.'}
+          </p>
+          {filterResponses && (
+            <button
+              onClick={onToggleFilter}
+              className="mt-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
+            >
+              Ver todas las conversaciones
+            </button>
+          )}
         </div>
       </div>
     );
@@ -468,34 +519,63 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
 
   return (
     <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
-      {/* Header con botón de refrescar */}
-      <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200 flex justify-between items-center">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900 flex items-center space-x-2">
-            <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+      {/* Header con botón de refrescar y filtro */}
+      <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
+        <div className="flex justify-between items-center mb-3">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900 flex items-center space-x-2">
+              <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <span>Conversaciones</span>
+            </h3>
+            <p className="text-sm text-gray-600 mt-1">
+              {conversationsWithResponses > 0 && (
+                <span className="font-semibold text-green-600">
+                  {conversationsWithResponses} con respuesta{conversationsWithResponses !== 1 ? 's' : ''}
+                </span>
+              )}
+              {conversationsWithResponses === 0 && 'Sin respuestas nuevas'}
+            </p>
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2 disabled:opacity-50"
+          >
+            <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            <span>Conversaciones</span>
-          </h3>
-          <p className="text-sm text-gray-600 mt-1">
-            {conversationsWithResponses > 0 && (
-              <span className="font-semibold text-green-600">
-                {conversationsWithResponses} con respuesta{conversationsWithResponses !== 1 ? 's' : ''}
+            <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
+          </button>
+        </div>
+        
+        {/* Botón de filtro */}
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={onToggleFilter}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+              filterResponses
+                ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
+                : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+            </svg>
+            <span>{filterResponses ? 'Solo con respuestas' : 'Mostrar respuestas'}</span>
+            {filterResponses && conversationsWithResponses > 0 && (
+              <span className="bg-white text-green-600 px-2 py-0.5 rounded-full text-xs font-bold">
+                {conversationsWithResponses}
               </span>
             )}
-            {conversationsWithResponses === 0 && 'Sin respuestas nuevas'}
-          </p>
+          </button>
+          {filterResponses && (
+            <span className="text-xs text-gray-600 animate-fadeIn">
+              Mostrando {filteredConversations.length} de {conversations.length} conversaciones
+            </span>
+          )}
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={isRefreshing}
-          className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2 disabled:opacity-50"
-        >
-          <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
-        </button>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
@@ -516,7 +596,7 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {conversations.map((conversation) => (
+            {filteredConversations.map((conversation) => (
               <tr key={conversation.id} className={`transition-all duration-200 ${
                 conversation.hasResponse 
                   ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
