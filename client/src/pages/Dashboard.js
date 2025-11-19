@@ -229,6 +229,33 @@ const Dashboard = () => {
     }
   };
 
+  const handleUpdateConversationStatus = async (conversationId, newStatus) => {
+    try {
+      // Encontrar la conversación actual
+      const currentConversation = conversations.find(conv => conv.id === conversationId);
+      
+      // Si el estado actual es el mismo que el nuevo, establecer a null
+      const finalStatus = currentConversation?.estado === newStatus ? null : newStatus;
+      
+      const { error } = await supabase
+        .from('conversations')
+        .update({ estado: finalStatus })
+        .eq('id', conversationId);
+      
+      if (error) throw error;
+      
+      // Actualizar el estado local
+      setConversations(prev => prev.map(conv => 
+        conv.id === conversationId ? { ...conv, estado: finalStatus } : conv
+      ));
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating conversation status:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
   };
@@ -426,6 +453,7 @@ const Dashboard = () => {
             onRefresh={getConversations}
             filterResponses={filterResponses}
             onToggleFilter={() => setFilterResponses(!filterResponses)}
+            onUpdateStatus={handleUpdateConversationStatus}
           />
         ) : (
           <ClientsTab 
@@ -463,7 +491,7 @@ const Dashboard = () => {
 };
 
 // Componente de Tab de Conversaciones
-const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter }) => {
+const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter, onUpdateStatus }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   
   const handleRefresh = async () => {
@@ -667,15 +695,47 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
                   </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <button
-                    onClick={() => onOpenConversation(conversation)}
-                    className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                  >
-                    <span>Ver mensajes</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
+                  <div className="flex items-center justify-end space-x-2">
+                    <button
+                      onClick={() => onOpenConversation(conversation)}
+                      className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+                    >
+                      <span>Ver mensajes</span>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                    
+                    {/* Botón Interesado */}
+                    <button
+                      onClick={() => onUpdateStatus(conversation.id, 'interesado')}
+                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
+                        conversation.estado === 'interesado'
+                          ? 'bg-gradient-to-r from-green-500 to-green-600 text-white'
+                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                      }`}
+                      title="Marcar como interesado"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </button>
+                    
+                    {/* Botón Rechazado */}
+                    <button
+                      onClick={() => onUpdateStatus(conversation.id, 'rechazado')}
+                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
+                        conversation.estado === 'rechazado'
+                          ? 'bg-gradient-to-r from-red-500 to-red-600 text-white'
+                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                      }`}
+                      title="Marcar como rechazado"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
