@@ -17,9 +17,7 @@ const Dashboard = () => {
   const [loadingMoreClients, setLoadingMoreClients] = useState(false);
   const [totalClients, setTotalClients] = useState(0);
   const [filterResponses, setFilterResponses] = useState(false); // Nuevo estado para filtro
-  const [showCommentModal, setShowCommentModal] = useState(false);
-  const [selectedConversationForComment, setSelectedConversationForComment] = useState(null);
-  const [commentText, setCommentText] = useState('');
+  const [expandedCommentId, setExpandedCommentId] = useState(null);
   const CLIENTS_PER_PAGE = 10;
 
   useEffect(() => {
@@ -259,37 +257,37 @@ const Dashboard = () => {
     }
   };
 
-  const handleOpenCommentModal = (conversation) => {
-    setSelectedConversationForComment(conversation);
-    setCommentText(conversation.comentario || '');
-    setShowCommentModal(true);
+  const handleToggleComment = (conversationId) => {
+    setExpandedCommentId(expandedCommentId === conversationId ? null : conversationId);
   };
 
-  const handleCloseCommentModal = () => {
-    setShowCommentModal(false);
-    setSelectedConversationForComment(null);
-    setCommentText('');
-  };
-
-  const handleSaveComment = async () => {
-    if (!selectedConversationForComment) return;
-    
+  const handleUpdateComment = async (conversationId, newComment) => {
     try {
-      const { error } = await supabase
-        .from('conversations')
-        .update({ comentario: commentText })
-        .eq('id', selectedConversationForComment.id);
+      console.log('Actualizando comentario:', { conversationId, newComment });
       
-      if (error) throw error;
-      
-      // Actualizar el estado local
+      // Actualizar el estado local inmediatamente para mejor UX
       setConversations(prev => prev.map(conv => 
-        conv.id === selectedConversationForComment.id ? { ...conv, comentario: commentText } : conv
+        conv.id === conversationId ? { ...conv, comentario: newComment } : conv
       ));
+
+      // Guardar en la base de datos
+      const { data, error } = await supabase
+        .from('conversations')
+        .update({ comentario: newComment })
+        .eq('id', conversationId)
+        .select();
       
-      handleCloseCommentModal();
+      if (error) {
+        console.error('Error updating comment:', error);
+        console.error('Error details:', JSON.stringify(error, null, 2));
+        // Revertir el cambio local si hay error
+        await getConversations();
+      } else {
+        console.log('Comentario actualizado correctamente:', data);
+      }
     } catch (error) {
-      console.error('Error saving comment:', error);
+      console.error('Error updating comment:', error);
+      await getConversations();
     }
   };
 
@@ -309,7 +307,7 @@ const Dashboard = () => {
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-gray-50 to-blue-50">
       {/* Header Mejorado */}
       <header className="bg-white shadow-lg border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-5">
             <div className="flex items-center space-x-3">
               <div className="w-12 h-12 bg-gradient-to-br from-green-400 via-green-500 to-green-600 rounded-xl flex items-center justify-center shadow-lg transform hover:scale-105 transition-transform">
@@ -342,7 +340,7 @@ const Dashboard = () => {
       </header>
 
       {/* Estadísticas */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           {/* Card Conversaciones */}
           <div className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 transform hover:-translate-y-1">
@@ -491,7 +489,9 @@ const Dashboard = () => {
             filterResponses={filterResponses}
             onToggleFilter={() => setFilterResponses(!filterResponses)}
             onUpdateStatus={handleUpdateConversationStatus}
-            onOpenComment={handleOpenCommentModal}
+            expandedCommentId={expandedCommentId}
+            onToggleComment={handleToggleComment}
+            onUpdateComment={handleUpdateComment}
           />
         ) : (
           <ClientsTab 
@@ -524,22 +524,12 @@ const Dashboard = () => {
           onSave={handleAddClient}
         />
       )}
-
-      {/* Comment Modal */}
-      <CommentModal
-        show={showCommentModal}
-        conversation={selectedConversationForComment}
-        comment={commentText}
-        onChange={setCommentText}
-        onSave={handleSaveComment}
-        onClose={handleCloseCommentModal}
-      />
     </div>
   );
 };
 
 // Componente de Tab de Conversaciones
-const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter, onUpdateStatus, onOpenComment }) => {
+const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter, onUpdateStatus, expandedCommentId, onToggleComment, onUpdateComment }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   
   const handleRefresh = async () => {
@@ -666,6 +656,9 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
               <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                 Última actualización
               </th>
+              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                Comentario
+              </th>
               <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">
                 Acciones
               </th>
@@ -673,11 +666,12 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredConversations.map((conversation) => (
-              <tr key={conversation.id} className={`transition-all duration-200 ${
-                conversation.hasResponse 
-                  ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
-                  : 'hover:bg-blue-50'
-              }`}>
+              <React.Fragment key={conversation.id}>
+                <tr className={`transition-all duration-200 ${
+                  conversation.hasResponse 
+                    ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
+                    : 'hover:bg-blue-50'
+                }`}>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="flex items-center">
                     <div className={`flex-shrink-0 h-12 w-12 rounded-xl flex items-center justify-center shadow-md relative ${
@@ -742,6 +736,49 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
                     </span>
                   </div>
                 </td>
+                <td className="px-4 py-4">
+                  {conversation.comentario || expandedCommentId === conversation.id ? (
+                    <div className="relative group">
+                      <div className="flex items-center space-x-2 bg-yellow-50 border-2 border-yellow-300 rounded-lg px-3 py-2 min-w-[200px] max-w-xs">
+                        <svg className="w-4 h-4 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                        </svg>
+                        <input
+                          type="text"
+                          value={conversation.comentario || ''}
+                          onChange={(e) => onUpdateComment(conversation.id, e.target.value)}
+                          className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 placeholder-gray-400"
+                          placeholder="Añadir comentario..."
+                          autoFocus={expandedCommentId === conversation.id}
+                        />
+                        <button
+                          onClick={() => {
+                            if (conversation.comentario) {
+                              onUpdateComment(conversation.id, '');
+                            }
+                            onToggleComment(null);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-yellow-600 hover:text-yellow-800"
+                          title={conversation.comentario ? "Borrar comentario" : "Cerrar"}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => onToggleComment(conversation.id)}
+                      className="inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md bg-gray-100 hover:bg-gray-200 text-gray-600"
+                      title="Añadir comentario"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                      </svg>
+                    </button>
+                  )}
+                </td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                   <div className="flex items-center justify-end space-x-2">
                     <button
@@ -783,24 +820,10 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                       </svg>
                     </button>
-                    
-                    {/* Botón Comentario */}
-                    <button
-                      onClick={() => onOpenComment(conversation)}
-                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
-                        conversation.comentario
-                          ? 'bg-gradient-to-r from-yellow-500 to-yellow-600 text-white'
-                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-                      }`}
-                      title={conversation.comentario || "Añadir comentario"}
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                      </svg>
-                    </button>
                   </div>
                 </td>
               </tr>
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -1449,76 +1472,6 @@ const AddClientModal = ({ onClose, onSave }) => {
             </button>
           </div>
         </form>
-      </div>
-    </div>
-  );
-};
-
-// Modal de Comentarios
-const CommentModal = ({ show, conversation, comment, onChange, onSave, onClose }) => {
-  if (!show) return null;
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 animate-fadeIn">
-      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden animate-scaleIn">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-yellow-500 to-yellow-600 text-white px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center space-x-3">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-            </svg>
-            <h3 className="text-xl font-bold">Comentario</h3>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-white hover:bg-yellow-600 rounded-lg p-2 transition-colors"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-6">
-          <div className="mb-4">
-            <p className="text-sm text-gray-600 mb-2">
-              Conversación: <span className="font-semibold text-gray-900">{conversation?.title || conversation?.id.replace('whatsapp:', '').replace('@c.us', '')}</span>
-            </p>
-          </div>
-          
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
-              Comentario
-            </label>
-            <textarea
-              value={comment}
-              onChange={(e) => onChange(e.target.value)}
-              placeholder="Ej: Llamar mañana a las 10:00, Interesado en el servicio..."
-              rows={6}
-              className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 transition-all shadow-sm resize-none"
-            />
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="bg-gray-50 px-6 py-4 flex justify-end space-x-3">
-          <button
-            onClick={onClose}
-            className="bg-white hover:bg-gray-50 text-gray-700 font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 border-2 border-gray-300 shadow-sm hover:shadow-md"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={onSave}
-            className="bg-gradient-to-r from-yellow-500 to-yellow-600 hover:from-yellow-600 hover:to-yellow-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-            <span>Guardar</span>
-          </button>
-        </div>
       </div>
     </div>
   );
