@@ -532,11 +532,47 @@ const Dashboard = () => {
 // Componente de Tab de Conversaciones
 const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter, onUpdateStatus, expandedCommentId, onToggleComment, onUpdateComment }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
+  const [selectedClientForDetails, setSelectedClientForDetails] = React.useState(null);
+  const [clientDetails, setClientDetails] = React.useState(null);
+  const [loadingDetails, setLoadingDetails] = React.useState(false);
   
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await onRefresh();
     setTimeout(() => setIsRefreshing(false), 500);
+  };
+
+  const handleShowClientDetails = async (conversation) => {
+    setSelectedClientForDetails(conversation);
+    setLoadingDetails(true);
+    
+    try {
+      // Extraer el número de teléfono del ID de la conversación
+      const phoneNumber = conversation.id.replace('whatsapp:', '').replace('@c.us', '');
+      
+      // Buscar cliente en la base de datos por teléfono
+      const { data, error } = await supabase
+        .from('clientes')
+        .select('*')
+        .eq('TELEFONO', phoneNumber)
+        .single();
+      
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error fetching client details:', error);
+      }
+      
+      setClientDetails(data || null);
+    } catch (error) {
+      console.error('Error:', error);
+      setClientDetails(null);
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
+
+  const handleCloseClientDetails = () => {
+    setSelectedClientForDetails(null);
+    setClientDetails(null);
   };
   
   // Filtrar conversaciones según el estado del filtro
@@ -651,8 +687,8 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
               <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                 Conversación
               </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Creada
+              <th className="px-6 py-4 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                Detalles
               </th>
               <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                 Última actualización
@@ -707,19 +743,16 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
                     </div>
                   </div>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                  <div className="flex items-center space-x-2">
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                <td className="px-6 py-4 whitespace-nowrap text-center">
+                  <button
+                    onClick={() => handleShowClientDetails(conversation)}
+                    className="inline-flex items-center space-x-2 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <span>
-                      {new Date(conversation.created_at).toLocaleDateString('es-ES', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric'
-                      })}
-                    </span>
-                  </div>
+                    <span>Más detalles</span>
+                  </button>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                   <div className="flex items-center space-x-2">
@@ -829,6 +862,150 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
           </tbody>
         </table>
       </div>
+
+      {/* Modal de Detalles del Cliente */}
+      {selectedClientForDetails && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-3xl w-full animate-slideUp border border-gray-200">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b bg-gradient-to-r from-indigo-50 to-indigo-100">
+              <div className="flex items-center space-x-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-indigo-400 to-indigo-600 rounded-xl flex items-center justify-center shadow-md">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Detalles del Cliente</h3>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    {selectedClientForDetails.id.replace('whatsapp:', '').replace('@c.us', '')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleCloseClientDetails}
+                className="text-gray-400 hover:text-gray-600 hover:bg-white rounded-lg p-2 transition-all"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 max-h-[70vh] overflow-y-auto">
+              {loadingDetails ? (
+                <div className="flex justify-center items-center py-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-200 border-t-indigo-600"></div>
+                </div>
+              ) : clientDetails ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Nombre Completo</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['NOMBRE COMPLETO'] || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Nº Orden</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['N ORDEN'] || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Contrato</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.CONTRATO || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Servicio</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.SERVICIO || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Teléfono</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.TELEFONO || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Teléfono Fijo</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['TELEFONO FIJO'] || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg md:col-span-2">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Dirección</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.DIRECCION || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Código Postal</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['CODIGO POSTAL'] || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Municipio</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.MUNICIPIO || '-'}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Estado</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">
+                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                          clientDetails.ESTADO === 'ACTIVO' 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {clientDetails.ESTADO || '-'}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <label className="text-xs font-semibold text-gray-600 uppercase">Estado Mensaje</label>
+                      <p className="text-sm font-medium text-gray-900 mt-1">
+                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                          clientDetails['ESTADO MENSAJE'] === 'ENVIADO' 
+                            ? 'bg-blue-100 text-blue-800' 
+                            : clientDetails['ESTADO MENSAJE'] === 'PENDIENTE'
+                            ? 'bg-yellow-100 text-yellow-800'
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {clientDetails['ESTADO MENSAJE'] || '-'}
+                        </span>
+                      </p>
+                    </div>
+                    {clientDetails.FECHA && (
+                      <div className="bg-gray-50 p-4 rounded-lg">
+                        <label className="text-xs font-semibold text-gray-600 uppercase">Fecha</label>
+                        <p className="text-sm font-medium text-gray-900 mt-1">
+                          {clientDetails.FECHA}
+                        </p>
+                      </div>
+                    )}
+                    {clientDetails['FECHA ENVIO PLANTILLA'] && (
+                      <div className="bg-gray-50 p-4 rounded-lg">
+                        <label className="text-xs font-semibold text-gray-600 uppercase">Fecha Envío Plantilla</label>
+                        <p className="text-sm font-medium text-gray-900 mt-1">
+                          {clientDetails['FECHA ENVIO PLANTILLA']}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg className="h-10 w-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  </div>
+                  <p className="text-base text-gray-900 font-semibold">No se encontró información del cliente</p>
+                  <p className="mt-2 text-sm text-gray-600">Este número no está registrado en la base de datos de clientes</p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex justify-end p-6 border-t bg-gray-50">
+              <button
+                onClick={handleCloseClientDetails}
+                className="bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
