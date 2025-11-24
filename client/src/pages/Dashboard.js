@@ -73,9 +73,25 @@ const Dashboard = () => {
       
       if (convError) throw convError;
       
-      // Para cada conversación, verificar si hay mensajes respondidos
+      // Para cada conversación, verificar si hay mensajes respondidos y obtener fecha de envío de plantilla
       const conversationsWithStatus = await Promise.all(
         (conversationsData || []).map(async (conv) => {
+          // Obtener la fecha de envío de plantilla del cliente usando el nombre completo (title)
+          const { data: clientData } = await supabase
+            .from('clientes')
+            .select('"FECHA ENVIO PLANTILLA"')
+            .eq('NOMBRE COMPLETO', conv.title?.trim())
+            .maybeSingle();
+          
+          // Obtener el último mensaje de la conversación (de cualquier tipo)
+          const { data: lastMessage } = await supabase
+            .from('messages')
+            .select('created_at')
+            .eq('conversation_id', conv.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          
           // Buscar mensajes con Respondido = true (respuestas del cliente)
           const { data: messages } = await supabase
             .from('messages')
@@ -96,22 +112,73 @@ const Dashboard = () => {
               .limit(1);
             
             const hasResponse = assistantMessages && assistantMessages.length > 0;
+            
+            // Calcular la fecha más reciente entre la fecha de envío de plantilla y el último mensaje
+            const fechaEnvioPlantilla = clientData?.['FECHA ENVIO PLANTILLA'];
+            const fechaUltimoMensaje = lastMessage?.created_at;
+            
+            let ultimaActualizacion = conv.updated_at;
+            if (fechaEnvioPlantilla && fechaUltimoMensaje) {
+              const fechaPlantillaTime = new Date(fechaEnvioPlantilla).getTime();
+              const fechaMensajeTime = new Date(fechaUltimoMensaje).getTime();
+              ultimaActualizacion = fechaMensajeTime > fechaPlantillaTime ? fechaUltimoMensaje : fechaEnvioPlantilla;
+            } else if (fechaEnvioPlantilla) {
+              ultimaActualizacion = fechaEnvioPlantilla;
+            } else if (fechaUltimoMensaje) {
+              ultimaActualizacion = fechaUltimoMensaje;
+            }
+            
             return {
               ...conv,
               hasResponse,
-              lastMessageTime: assistantMessages && assistantMessages.length > 0 ? assistantMessages[0].created_at : conv.updated_at
+              lastMessageTime: assistantMessages && assistantMessages.length > 0 ? assistantMessages[0].created_at : conv.updated_at,
+              fechaEnvioPlantilla: fechaEnvioPlantilla || null,
+              ultimaActualizacion: ultimaActualizacion
             };
           }
           
           const hasResponse = messages && messages.length > 0;
           
+          // Calcular la fecha más reciente entre la fecha de envío de plantilla y el último mensaje
+          const fechaEnvioPlantilla = clientData?.['FECHA ENVIO PLANTILLA'];
+          const fechaUltimoMensaje = lastMessage?.created_at;
+          
+          let ultimaActualizacion = conv.updated_at;
+          if (fechaEnvioPlantilla && fechaUltimoMensaje) {
+            const fechaPlantillaTime = new Date(fechaEnvioPlantilla).getTime();
+            const fechaMensajeTime = new Date(fechaUltimoMensaje).getTime();
+            ultimaActualizacion = fechaMensajeTime > fechaPlantillaTime ? fechaUltimoMensaje : fechaEnvioPlantilla;
+          } else if (fechaEnvioPlantilla) {
+            ultimaActualizacion = fechaEnvioPlantilla;
+          } else if (fechaUltimoMensaje) {
+            ultimaActualizacion = fechaUltimoMensaje;
+          }
+          
           return {
             ...conv,
             hasResponse,
-            lastMessageTime: messages && messages.length > 0 ? messages[0].created_at : conv.updated_at
+            lastMessageTime: messages && messages.length > 0 ? messages[0].created_at : conv.updated_at,
+            fechaEnvioPlantilla: fechaEnvioPlantilla || null,
+            ultimaActualizacion: ultimaActualizacion
           };
         })
       );
+      
+      // Ordenar por última actualización (más reciente primero)
+      conversationsWithStatus.sort((a, b) => {
+        try {
+          const dateA = a.ultimaActualizacion ? new Date(a.ultimaActualizacion) : new Date(0);
+          const dateB = b.ultimaActualizacion ? new Date(b.ultimaActualizacion) : new Date(0);
+          
+          // Verificar que las fechas sean válidas
+          const timeA = !isNaN(dateA.getTime()) ? dateA.getTime() : 0;
+          const timeB = !isNaN(dateB.getTime()) ? dateB.getTime() : 0;
+          
+          return timeB - timeA;
+        } catch (e) {
+          return 0;
+        }
+      });
       
       // Log para depuración
       const withResponses = conversationsWithStatus.filter(c => c.hasResponse);
@@ -1039,13 +1106,37 @@ const ConversationsTab = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <span>
-                      {new Date(conversation.updated_at).toLocaleDateString('es-ES', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
+                      {(() => {
+                        try {
+                          if (conversation.ultimaActualizacion) {
+                            const date = new Date(conversation.ultimaActualizacion);
+                            if (!isNaN(date.getTime())) {
+                              return date.toLocaleDateString('es-ES', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              });
+                            }
+                          }
+                          return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          });
+                        } catch (e) {
+                          return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          });
+                        }
+                      })()}
                     </span>
                   </div>
                 </td>
