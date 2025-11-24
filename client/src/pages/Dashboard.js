@@ -18,6 +18,9 @@ const Dashboard = () => {
   const [totalClients, setTotalClients] = useState(0);
   const [filterResponses, setFilterResponses] = useState(false); // Nuevo estado para filtro
   const [expandedCommentId, setExpandedCommentId] = useState(null);
+  const [selectionMode, setSelectionMode] = useState(false); // Modo de selección
+  const [selectedConversations, setSelectedConversations] = useState([]); // IDs seleccionados
+  const [showArchived, setShowArchived] = useState(false); // Mostrar archivadas
   const CLIENTS_PER_PAGE = 10;
 
   useEffect(() => {
@@ -34,6 +37,14 @@ const Dashboard = () => {
     return () => clearInterval(intervalId);
   }, []);
 
+  // Recargar conversaciones cuando cambie el filtro de archivadas
+  useEffect(() => {
+    getConversations();
+    // Limpiar selección al cambiar de vista
+    setSelectedConversations([]);
+    setSelectionMode(false);
+  }, [showArchived]);
+
   const getUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     setUser(user);
@@ -45,10 +56,19 @@ const Dashboard = () => {
       const { data: { user } } = await supabase.auth.getUser();
       
       // Obtener conversaciones con información de mensajes
-      const { data: conversationsData, error: convError } = await supabase
+      let query = supabase
         .from('conversations')
         .select('*')
-        .eq('user_id', user.id)
+        .eq('user_id', user.id);
+      
+      // Filtrar por estado archivado o no
+      if (showArchived) {
+        query = query.eq('estado', 'archivada');
+      } else {
+        query = query.or('estado.is.null,estado.neq.archivada');
+      }
+      
+      const { data: conversationsData, error: convError } = await query
         .order('updated_at', { ascending: false });
       
       if (convError) throw convError;
@@ -291,6 +311,72 @@ const Dashboard = () => {
     }
   };
 
+  const toggleSelectionMode = () => {
+    setSelectionMode(!selectionMode);
+    setSelectedConversations([]); // Limpiar selección al cambiar modo
+  };
+
+  const toggleConversationSelection = (conversationId) => {
+    setSelectedConversations(prev => {
+      if (prev.includes(conversationId)) {
+        return prev.filter(id => id !== conversationId);
+      } else {
+        return [...prev, conversationId];
+      }
+    });
+  };
+
+  const selectAllConversations = (conversations) => {
+    if (Array.isArray(conversations) && conversations.length > 0 && conversations[0]?.id) {
+      const allIds = conversations.map(conv => conv.id);
+      setSelectedConversations(allIds);
+    } else {
+      setSelectedConversations([]);
+    }
+  };
+
+  const handleArchiveSelected = async () => {
+    if (selectedConversations.length === 0) return;
+
+    try {
+      const { error } = await supabase
+        .from('conversations')
+        .update({ estado: 'archivada' })
+        .in('id', selectedConversations);
+
+      if (error) throw error;
+
+      // Recargar conversaciones y limpiar selección
+      await getConversations();
+      setSelectedConversations([]);
+      setSelectionMode(false);
+    } catch (error) {
+      console.error('Error archiving conversations:', error);
+      alert('Error al archivar conversaciones');
+    }
+  };
+
+  const handleUnarchiveSelected = async () => {
+    if (selectedConversations.length === 0) return;
+
+    try {
+      const { error } = await supabase
+        .from('conversations')
+        .update({ estado: null })
+        .in('id', selectedConversations);
+
+      if (error) throw error;
+
+      // Recargar conversaciones y limpiar selección
+      await getConversations();
+      setSelectedConversations([]);
+      setSelectionMode(false);
+    } catch (error) {
+      console.error('Error unarchiving conversations:', error);
+      alert('Error al desarchivar conversaciones');
+    }
+  };
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
   };
@@ -492,6 +578,15 @@ const Dashboard = () => {
             expandedCommentId={expandedCommentId}
             onToggleComment={handleToggleComment}
             onUpdateComment={handleUpdateComment}
+            selectionMode={selectionMode}
+            selectedConversations={selectedConversations}
+            onToggleSelectionMode={toggleSelectionMode}
+            onToggleConversationSelection={toggleConversationSelection}
+            onSelectAll={selectAllConversations}
+            onArchiveSelected={handleArchiveSelected}
+            onUnarchiveSelected={handleUnarchiveSelected}
+            showArchived={showArchived}
+            onToggleArchived={() => setShowArchived(!showArchived)}
           />
         ) : (
           <ClientsTab 
@@ -530,7 +625,27 @@ const Dashboard = () => {
 };
 
 // Componente de Tab de Conversaciones
-const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefresh, filterResponses, onToggleFilter, onUpdateStatus, expandedCommentId, onToggleComment, onUpdateComment }) => {
+const ConversationsTab = ({ 
+  conversations, 
+  loading, 
+  onOpenConversation, 
+  onRefresh, 
+  filterResponses, 
+  onToggleFilter, 
+  onUpdateStatus, 
+  expandedCommentId, 
+  onToggleComment, 
+  onUpdateComment,
+  selectionMode,
+  selectedConversations,
+  onToggleSelectionMode,
+  onToggleConversationSelection,
+  onSelectAll,
+  onArchiveSelected,
+  onUnarchiveSelected,
+  showArchived,
+  onToggleArchived
+}) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [selectedClientForDetails, setSelectedClientForDetails] = React.useState(null);
   const [clientDetails, setClientDetails] = React.useState(null);
@@ -588,37 +703,108 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
     );
   }
 
+  const conversationsWithResponses = conversations.filter(c => c.hasResponse).length;
+
   if (filteredConversations.length === 0) {
     return (
-      <div className="bg-white rounded-xl shadow-md border border-gray-100 text-center py-16 px-6">
-        <div className="max-w-sm mx-auto">
-          <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="h-10 w-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">
-            {filterResponses ? 'No hay conversaciones con respuestas' : 'No hay conversaciones'}
-          </h3>
-          <p className="text-sm text-gray-500">
-            {filterResponses 
-              ? 'No hay conversaciones donde los clientes hayan respondido. Desactiva el filtro para ver todas las conversaciones.'
-              : 'Las conversaciones aparecerán aquí cuando se reciban mensajes de tus clientes.'}
-          </p>
-          {filterResponses && (
+      <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+        {/* Header con botones siempre visible */}
+        <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
+          <div className="flex justify-between items-center mb-3">
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 flex items-center space-x-2">
+                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <span>Conversaciones</span>
+              </h3>
+              <p className="text-sm text-gray-600 mt-1">
+                {showArchived ? 'Conversaciones archivadas' : 'Conversaciones activas'}
+              </p>
+            </div>
             <button
-              onClick={onToggleFilter}
-              className="mt-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2 disabled:opacity-50"
             >
-              Ver todas las conversaciones
+              <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
             </button>
-          )}
+          </div>
+          
+          {/* Botones de filtro y selección */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={onToggleFilter}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                  filterResponses
+                    ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                </svg>
+                <span>{filterResponses ? 'Solo con respuestas' : 'Mostrar respuestas'}</span>
+              </button>
+
+              <button
+                onClick={onToggleSelectionMode}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                  selectionMode
+                    ? 'bg-indigo-500 text-white shadow-md hover:bg-indigo-600'
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+                <span>{selectionMode ? 'Cancelar selección' : 'Seleccionar'}</span>
+              </button>
+
+              <button
+                onClick={onToggleArchived}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                  showArchived
+                    ? 'bg-amber-500 text-white shadow-md hover:bg-amber-600'
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                </svg>
+                <span>{showArchived ? 'Ver activas' : 'Ver archivadas'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Mensaje de vacío */}
+        <div className="text-center py-16 px-6">
+          <div className="max-w-sm mx-auto">
+            <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="h-10 w-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              {showArchived ? 'No hay conversaciones archivadas' : filterResponses ? 'No hay conversaciones con respuestas' : 'No hay conversaciones'}
+            </h3>
+            <p className="text-sm text-gray-500">
+              {showArchived 
+                ? 'Aún no has archivado ninguna conversación.'
+                : filterResponses 
+                  ? 'No hay conversaciones donde los clientes hayan respondido.'
+                  : 'Las conversaciones aparecerán aquí cuando se reciban mensajes de tus clientes.'}
+            </p>
+          </div>
         </div>
       </div>
     );
   }
-
-  const conversationsWithResponses = conversations.filter(c => c.hasResponse).length;
 
   return (
     <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
@@ -653,30 +839,97 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
           </button>
         </div>
         
-        {/* Botón de filtro */}
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={onToggleFilter}
-            className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-              filterResponses
-                ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
-                : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-            }`}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-            </svg>
-            <span>{filterResponses ? 'Solo con respuestas' : 'Mostrar respuestas'}</span>
-            {filterResponses && conversationsWithResponses > 0 && (
-              <span className="bg-white text-green-600 px-2 py-0.5 rounded-full text-xs font-bold">
-                {conversationsWithResponses}
+        {/* Botones de filtro y selección */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={onToggleFilter}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                filterResponses
+                  ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
+                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              <span>{filterResponses ? 'Solo con respuestas' : 'Mostrar respuestas'}</span>
+              {filterResponses && conversationsWithResponses > 0 && (
+                <span className="bg-white text-green-600 px-2 py-0.5 rounded-full text-xs font-bold">
+                  {conversationsWithResponses}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={onToggleSelectionMode}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                selectionMode
+                  ? 'bg-indigo-500 text-white shadow-md hover:bg-indigo-600'
+                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+              <span>{selectionMode ? 'Cancelar selección' : 'Seleccionar'}</span>
+            </button>
+
+            <button
+              onClick={onToggleArchived}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                showArchived
+                  ? 'bg-amber-500 text-white shadow-md hover:bg-amber-600'
+                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+              </svg>
+              <span>{showArchived ? 'Ver activas' : 'Ver archivadas'}</span>
+            </button>
+
+            {filterResponses && (
+              <span className="text-xs text-gray-600 animate-fadeIn">
+                Mostrando {filteredConversations.length} de {conversations.length} conversaciones
               </span>
             )}
-          </button>
-          {filterResponses && (
-            <span className="text-xs text-gray-600 animate-fadeIn">
-              Mostrando {filteredConversations.length} de {conversations.length} conversaciones
-            </span>
+          </div>
+
+          {/* Botones de acción cuando hay selección */}
+          {selectionMode && selectedConversations.length > 0 && (
+            <div className="flex items-center space-x-2 animate-fadeIn">
+              <span className="text-sm text-gray-600 font-medium">
+                {selectedConversations.length} seleccionada{selectedConversations.length !== 1 ? 's' : ''}
+              </span>
+              <button
+                onClick={() => onSelectAll(filteredConversations)}
+                className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                Seleccionar todas
+              </button>
+              {!showArchived ? (
+                <button
+                  onClick={onArchiveSelected}
+                  className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                  </svg>
+                  <span>Archivar</span>
+                </button>
+              ) : (
+                <button
+                  onClick={onUnarchiveSelected}
+                  className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  <span>Desarchivar</span>
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -684,6 +937,22 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
             <tr>
+              {selectionMode && (
+                <th className="px-4 py-4 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider w-16">
+                  <input
+                    type="checkbox"
+                    checked={selectedConversations.length === filteredConversations.length && filteredConversations.length > 0}
+                    onChange={() => {
+                      if (selectedConversations.length === filteredConversations.length) {
+                        onSelectAll([]);
+                      } else {
+                        onSelectAll(filteredConversations);
+                      }
+                    }}
+                    className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                  />
+                </th>
+              )}
               <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                 Conversación
               </th>
@@ -708,7 +977,17 @@ const ConversationsTab = ({ conversations, loading, onOpenConversation, onRefres
                   conversation.hasResponse 
                     ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
                     : 'hover:bg-blue-50'
-                }`}>
+                } ${selectedConversations.includes(conversation.id) ? 'ring-2 ring-indigo-500' : ''}`}>
+                {selectionMode && (
+                  <td className="px-4 py-4 whitespace-nowrap text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedConversations.includes(conversation.id)}
+                      onChange={() => onToggleConversationSelection(conversation.id)}
+                      className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                    />
+                  </td>
+                )}
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="flex items-center">
                     <div className={`flex-shrink-0 h-12 w-12 rounded-xl flex items-center justify-center shadow-md relative ${
