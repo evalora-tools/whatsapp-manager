@@ -21,6 +21,10 @@ const Dashboard = () => {
   const [selectionMode, setSelectionMode] = useState(false); // Modo de selección
   const [selectedConversations, setSelectedConversations] = useState([]); // IDs seleccionados
   const [showArchived, setShowArchived] = useState(false); // Mostrar archivadas
+  const [showImportModal, setShowImportModal] = useState(false); // Modal de importación CSV
+  const [importProgress, setImportProgress] = useState({ status: 'idle', message: '', details: null }); // idle, processing, success, error
+  const [pendingDuplicates, setPendingDuplicates] = useState([]); // Clientes duplicados pendientes
+  const [pendingValidClients, setPendingValidClients] = useState([]); // Clientes válidos pendientes de insertar
   const CLIENTS_PER_PAGE = 10;
 
   useEffect(() => {
@@ -35,6 +39,7 @@ const Dashboard = () => {
     
     // Limpiar el intervalo cuando el componente se desmonte
     return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Recargar conversaciones cuando cambie el filtro de archivadas
@@ -43,6 +48,7 @@ const Dashboard = () => {
     // Limpiar selección al cambiar de vista
     setSelectedConversations([]);
     setSelectionMode(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showArchived]);
 
   const getUser = async () => {
@@ -213,12 +219,12 @@ const Dashboard = () => {
       
       // Aplicar búsqueda si existe
       if (search.trim() !== '') {
-        query = query.ilike('NOMBRE COMPLETO', `%${search}%`);
+        query = query.ilike('"NOMBRE COMPLETO"', `%${search}%`);
       }
       
       // Aplicar paginación y ordenar
       const { data, error, count } = await query
-        .order('FECHA', { ascending: false })
+        .order('"FECHA"', { ascending: false })
         .range(from, to);
       
       if (error) throw error;
@@ -297,7 +303,7 @@ const Dashboard = () => {
         user_id: user.id
       };
 
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('clientes')
         .insert([clientWithUserId])
         .select();
@@ -441,6 +447,467 @@ const Dashboard = () => {
     } catch (error) {
       console.error('Error unarchiving conversations:', error);
       alert('Error al desarchivar conversaciones');
+    }
+  };
+
+  const handleImportCSV = async (file) => {
+    if (!file) return;
+
+    setImportProgress({ status: 'processing', message: 'Procesando archivo...', details: null });
+
+    try {
+      const text = await file.text();
+      const lines = text.split('\n').filter(line => line.trim());
+      
+      if (lines.length < 2) {
+        throw new Error('El archivo CSV está vacío o no tiene datos');
+      }
+
+      // Detectar el separador (coma o punto y coma)
+      const firstLine = lines[0];
+      const semicolonCount = (firstLine.match(/;/g) || []).length;
+      const commaCount = (firstLine.match(/,/g) || []).length;
+      const separator = semicolonCount > commaCount ? ';' : ',';
+      
+      console.log(`Separador detectado: "${separator}" (comas: ${commaCount}, punto y coma: ${semicolonCount})`);
+
+      // Parsear CSV con el separador detectado
+      const parseCSVLine = (line, sep) => {
+        const values = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === sep && !inQuotes) {
+            values.push(current.trim().replace(/^"|"$/g, ''));
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        values.push(current.trim().replace(/^"|"$/g, ''));
+        return values;
+      };
+
+      const headers = parseCSVLine(lines[0], separator);
+      const rows = lines.slice(1).map(line => parseCSVLine(line, separator));
+
+      // Mapear columnas del CSV al esquema de Supabase
+      // Detectamos las columnas por su contenido o nombre parcial
+      const columnMapping = {};
+      
+      headers.forEach((header, index) => {
+        // Limpiar el header: quitar espacios y convertir a minúsculas
+        // Eliminar TODOS los caracteres que no sean letras básicas, números o espacios
+        const cleanHeader = header.trim().toLowerCase()
+          .replace(/[^a-z0-9\s:]/gi, '')  // Quitar TODO excepto letras básicas, números, espacios y :
+          .replace(/\s+/g, ' ')  // Normalizar espacios múltiples
+          .trim();
+        
+        console.log(`Header ${index}: "${header}" -> limpio: "${cleanHeader}"`);
+        
+        // Columna 1: Número -> N ORDEN (viene como "nmero" después de limpiar)
+        if (cleanHeader === 'nmero' || cleanHeader === 'numero' || cleanHeader.match(/^n.?mero$/)) {
+          columnMapping[header] = 'N ORDEN';
+        }
+        // Columna 2: Nombre del producto activo -> CONTRATO
+        else if (cleanHeader.includes('nombre del producto') || cleanHeader.includes('producto activo')) {
+          columnMapping[header] = 'CONTRATO';
+        }
+        // Columna 3: Tipo de orden de trabajo -> SERVICIO
+        else if (cleanHeader.includes('tipo de orden') || cleanHeader.includes('orden de trabajo')) {
+          columnMapping[header] = 'SERVICIO';
+        }
+        // Columna 4: Detalle del estado -> ESTADO
+        else if (cleanHeader.includes('detalle') && cleanHeader.includes('estado')) {
+          columnMapping[header] = 'ESTADO';
+        }
+        // Columna 5: Fecha
+        else if (cleanHeader === 'fecha' || cleanHeader.startsWith('fecha')) {
+          columnMapping[header] = 'FECHA';
+        }
+        // Columna 6: Cuenta: Nombre de la cuenta -> NOMBRE COMPLETO
+        else if (cleanHeader.includes('cuenta') && cleanHeader.includes('nombre')) {
+          columnMapping[header] = 'NOMBRE COMPLETO';
+        }
+        // Columna 7: Principal -> TELEFONO
+        else if (cleanHeader === 'principal') {
+          columnMapping[header] = 'TELEFONO';
+        }
+        // Columna 8: secundario -> TELEFONO FIJO
+        else if (cleanHeader === 'secundario' || cleanHeader.includes('secundar')) {
+          columnMapping[header] = 'TELEFONO FIJO';
+        }
+        // Columna 9: Dirección completa -> DIRECCION (viene como "direccin completa" o "direccn")
+        else if (cleanHeader.includes('direcc') || cleanHeader.includes('address')) {
+          columnMapping[header] = 'DIRECCION';
+        }
+        // Columna 10: Zip -> CODIGO POSTAL
+        else if (cleanHeader === 'zip' || cleanHeader.includes('codigo postal') || cleanHeader === 'cp') {
+          columnMapping[header] = 'CODIGO POSTAL';
+        }
+        // Columna 11: Ciudad -> MUNICIPIO
+        else if (cleanHeader === 'ciudad' || cleanHeader.includes('municipio')) {
+          columnMapping[header] = 'MUNICIPIO';
+        }
+      });
+      
+      console.log('Encabezados CSV detectados:', headers);
+      console.log('Primera fila de datos:', rows[0]);
+      console.log('Mapeo de columnas generado:', columnMapping);
+      
+      // Mostrar columnas no mapeadas
+      const unmappedHeaders = headers.filter(h => !columnMapping[h]);
+      if (unmappedHeaders.length > 0) {
+        console.log('Columnas no mapeadas:', unmappedHeaders);
+      }
+      
+      // Verificar que se encontraron las columnas críticas
+      const hasNOrden = Object.values(columnMapping).includes('N ORDEN');
+      const hasNombreCompleto = Object.values(columnMapping).includes('NOMBRE COMPLETO');
+      
+      console.log(`Columnas críticas encontradas - N ORDEN: ${hasNOrden}, NOMBRE COMPLETO: ${hasNombreCompleto}`);
+      
+      if (!hasNOrden || !hasNombreCompleto) {
+        const errorMsg = `No se pudieron encontrar las columnas requeridas en el CSV.\n\nColumnas detectadas:\n${headers.map((h, i) => `${i + 1}. "${h}"`).join('\n')}\n\nAsegúrate de que el archivo tenga columnas como "Número" y "Cuenta: Nombre de la cuenta" o similar.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+      
+      // Prueba: verificar la estructura de la tabla
+      const { data: testData, error: testError } = await supabase
+        .from('clientes')
+        .select('*')
+        .limit(1);
+      
+      if (testData && testData.length > 0) {
+        console.log('Columnas existentes en la tabla:', Object.keys(testData[0]));
+      }
+
+      // Obtener el user_id del usuario autenticado
+      const { data: { user } } = await supabase.auth.getUser();
+
+      // Obtener clientes existentes del usuario para validar duplicados
+      const { data: existingClients, error: fetchError } = await supabase
+        .from('clientes')
+        .select('"N ORDEN", "TELEFONO", "NOMBRE COMPLETO"')
+        .eq('user_id', user.id);
+
+      if (fetchError) {
+        console.error('Error al obtener clientes existentes:', fetchError);
+        throw fetchError;
+      }
+
+      const existingOrders = new Set(existingClients?.map(c => c['N ORDEN']) || []);
+      const existingPhones = new Set(existingClients?.map(c => c['TELEFONO']) || []);
+      const existingNames = new Set(existingClients?.map(c => c['NOMBRE COMPLETO']?.trim().toLowerCase()) || []);
+
+      // Transformar datos
+      const clientsToInsert = [];
+      const errors = [];
+      const duplicates = [];
+      const duplicatesData = []; // Guardar datos completos de duplicados
+
+      console.log('Total de filas a procesar:', rows.length);
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const client = { user_id: user.id };
+
+        // Mapear cada columna
+        headers.forEach((header, index) => {
+          const dbColumn = columnMapping[header];
+          if (dbColumn) {
+            let value = row[index] || null;
+            
+            // Limpiar valor (quitar espacios extra)
+            if (value && typeof value === 'string') {
+              value = value.trim();
+              if (value === '' || value === 'null' || value === 'undefined' || value.startsWith('#¿')) {
+                value = null;
+              }
+            }
+            
+            // Convertir tipos de datos
+            if (dbColumn === 'N ORDEN' || dbColumn === 'TELEFONO' || dbColumn === 'CODIGO POSTAL') {
+              if (value) {
+                const numericValue = value.toString().replace(/\D/g, '');
+                value = numericValue ? parseInt(numericValue) : null;
+              } else {
+                value = null;
+              }
+            }
+            
+            client[dbColumn] = value;
+          } else if (index < 15) { // Log solo primeras 15 columnas
+            console.log(`Columna sin mapeo: "${header}" (índice ${index})`);
+          }
+        });
+
+        if (i === 0) {
+          console.log(`Primera fila mapeada:`, client);
+          console.log(`N ORDEN: ${client['N ORDEN']}, NOMBRE COMPLETO: ${client['NOMBRE COMPLETO']}`);
+        }
+
+        // Validar campos requeridos
+        if (!client['N ORDEN'] || !client['NOMBRE COMPLETO']) {
+          errors.push(`Fila ${i + 2}: Falta N° ORDEN o NOMBRE COMPLETO`);
+          if (i < 5) { // Log solo primeras 5 filas con error
+            console.log(`Error en fila ${i + 2}:`, {
+              'N ORDEN': client['N ORDEN'],
+              'NOMBRE COMPLETO': client['NOMBRE COMPLETO'],
+              'Datos completos': client
+            });
+          }
+          continue;
+        }
+
+        // Validar duplicados
+        const orderNum = client['N ORDEN'];
+        const phone = client['TELEFONO'];
+        const name = client['NOMBRE COMPLETO']?.trim().toLowerCase();
+
+        if (existingOrders.has(orderNum)) {
+          duplicates.push(`Fila ${i + 2}: N° ORDEN ${orderNum} ya existe`);
+          duplicatesData.push({ client, reason: 'N ORDEN', key: orderNum });
+          console.log(`Duplicado en fila ${i + 2}: N° ORDEN ya existe`);
+          continue;
+        }
+
+        if (phone && existingPhones.has(phone)) {
+          duplicates.push(`Fila ${i + 2}: TELEFONO ${phone} ya existe`);
+          duplicatesData.push({ client, reason: 'TELEFONO', key: phone });
+          console.log(`Duplicado en fila ${i + 2}: TELEFONO ya existe`);
+          continue;
+        }
+
+        if (name && existingNames.has(name)) {
+          duplicates.push(`Fila ${i + 2}: Cliente "${client['NOMBRE COMPLETO']}" ya existe`);
+          duplicatesData.push({ client, reason: 'NOMBRE COMPLETO', key: name });
+          console.log(`Duplicado en fila ${i + 2}: NOMBRE ya existe`);
+          continue;
+        }
+
+        // Agregar a sets para validar duplicados dentro del mismo archivo
+        existingOrders.add(orderNum);
+        if (phone) existingPhones.add(phone);
+        if (name) existingNames.add(name);
+
+        clientsToInsert.push(client);
+      }
+
+      // NO insertar automáticamente - guardar para que el usuario decida
+      // Guardar clientes válidos pendientes
+      setPendingValidClients(clientsToInsert);
+      
+      // Guardar duplicados pendientes para posible eliminación
+      setPendingDuplicates(duplicatesData);
+
+      // Mostrar resumen con opciones
+      setImportProgress({
+        status: 'success',
+        message: `Análisis del CSV completado`,
+        details: {
+          total: rows.length,
+          validCount: clientsToInsert.length,
+          duplicates: duplicates.length,
+          errors: errors.length,
+          duplicatesList: duplicates,
+          errorsList: errors,
+          hasPendingDuplicates: duplicatesData.length > 0,
+          hasPendingValid: clientsToInsert.length > 0,
+          inserted: 0
+        }
+      });
+
+    } catch (error) {
+      console.error('Error importing CSV:', error);
+      setImportProgress({
+        status: 'error',
+        message: 'Error al importar el archivo',
+        details: { error: error.message }
+      });
+    }
+  };
+
+  // Función para insertar solo los clientes válidos (no duplicados)
+  const handleInsertValidClients = async () => {
+    if (pendingValidClients.length === 0) return;
+
+    setImportProgress({ status: 'processing', message: 'Insertando clientes...', details: null });
+
+    try {
+      const { data, error: insertError } = await supabase
+        .from('clientes')
+        .insert(pendingValidClients)
+        .select();
+
+      if (insertError) {
+        console.error('Error insertando clientes:', insertError);
+        throw insertError;
+      }
+
+      const insertedCount = data?.length || 0;
+
+      // Recargar lista de clientes
+      await getClients(1, '');
+
+      // Limpiar pendientes
+      setPendingValidClients([]);
+      setPendingDuplicates([]);
+
+      // Mostrar resumen final
+      setImportProgress({
+        status: 'success',
+        message: `Importación completada`,
+        details: {
+          total: insertedCount,
+          inserted: insertedCount,
+          duplicates: 0,
+          errors: 0,
+          duplicatesList: [],
+          errorsList: [],
+          hasPendingDuplicates: false,
+          hasPendingValid: false
+        }
+      });
+
+    } catch (error) {
+      console.error('Error insertando clientes:', error);
+      setImportProgress({
+        status: 'error',
+        message: 'Error al insertar clientes',
+        details: { error: error.message }
+      });
+    }
+  };
+
+  const handleDeleteDuplicatesAndInsert = async () => {
+    if (pendingDuplicates.length === 0) return;
+
+    setImportProgress({ status: 'processing', message: 'Eliminando duplicados e insertando nuevos...', details: null });
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      let deletedCount = 0;
+      let insertedCount = 0;
+      const errors = [];
+
+      // Agrupar duplicados por tipo
+      const orderDuplicates = pendingDuplicates.filter(d => d.reason === 'N ORDEN');
+      const phoneDuplicates = pendingDuplicates.filter(d => d.reason === 'TELEFONO');
+      const nameDuplicates = pendingDuplicates.filter(d => d.reason === 'NOMBRE COMPLETO');
+
+      // Eliminar duplicados por N ORDEN (uno por uno para mayor fiabilidad)
+      for (const dup of orderDuplicates) {
+        const { error } = await supabase
+          .from('clientes')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('N ORDEN', dup.key);
+        
+        if (error) {
+          console.error('Error eliminando por N ORDEN:', error);
+          errors.push(`Error eliminando N ORDEN ${dup.key}: ${error.message}`);
+        } else {
+          deletedCount++;
+        }
+      }
+
+      // Eliminar duplicados por TELEFONO (uno por uno)
+      for (const dup of phoneDuplicates) {
+        const { error } = await supabase
+          .from('clientes')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('TELEFONO', dup.key);
+        
+        if (error) {
+          console.error('Error eliminando por TELEFONO:', error);
+          errors.push(`Error eliminando TELEFONO ${dup.key}: ${error.message}`);
+        } else {
+          deletedCount++;
+        }
+      }
+
+      // Eliminar duplicados por NOMBRE COMPLETO
+      for (const dup of nameDuplicates) {
+        const { error } = await supabase
+          .from('clientes')
+          .delete()
+          .eq('user_id', user.id)
+          .ilike('NOMBRE COMPLETO', dup.key);
+        
+        if (error) {
+          console.error('Error eliminando por NOMBRE:', error);
+          errors.push(`Error eliminando ${dup.key}: ${error.message}`);
+        } else {
+          deletedCount++;
+        }
+      }
+
+      // Insertar todos los clientes: duplicados (que reemplazan) + válidos pendientes
+      const duplicateClients = pendingDuplicates.map(d => d.client);
+      const allClientsToInsert = [...duplicateClients, ...pendingValidClients];
+      
+      if (allClientsToInsert.length > 0) {
+        const { data, error: insertError } = await supabase
+          .from('clientes')
+          .insert(allClientsToInsert)
+          .select();
+
+        if (insertError) {
+          console.error('Error insertando clientes:', insertError);
+          errors.push(`Error insertando: ${insertError.message}`);
+        } else {
+          insertedCount = data?.length || 0;
+        }
+      }
+
+      // Recargar lista de clientes
+      await getClients(1, '');
+
+      // Limpiar pendientes
+      setPendingDuplicates([]);
+      setPendingValidClients([]);
+
+      // Mostrar resumen
+      setImportProgress({
+        status: 'success',
+        message: `Importación completada (con reemplazo de duplicados)`,
+        details: {
+          total: allClientsToInsert.length,
+          deleted: deletedCount,
+          inserted: insertedCount,
+          duplicates: 0,
+          errors: errors.length,
+          duplicatesList: [],
+          errorsList: errors,
+          hasPendingDuplicates: false,
+          hasPendingValid: false
+        }
+      });
+
+    } catch (error) {
+      console.error('Error en eliminación de duplicados:', error);
+      setImportProgress({
+        status: 'error',
+        message: 'Error al eliminar duplicados',
+        details: { error: error.message }
+      });
+    }
+  };
+
+  const handleFileSelect = (event) => {
+    const file = event.target.files[0];
+    if (file && file.type === 'text/csv') {
+      handleImportCSV(file);
+    } else {
+      alert('Por favor selecciona un archivo CSV válido');
     }
   };
 
@@ -665,6 +1132,7 @@ const Dashboard = () => {
             loadingMore={loadingMoreClients}
             searchTerm={searchTerm}
             onSearch={handleSearchClients}
+            onOpenImportModal={() => setShowImportModal(true)}
           />
         )}
       </div>
@@ -685,6 +1153,24 @@ const Dashboard = () => {
         <AddClientModal
           onClose={() => setShowAddClientModal(false)}
           onSave={handleAddClient}
+        />
+      )}
+
+      {/* Import CSV Modal */}
+      {showImportModal && (
+        <ImportCSVModal
+          onClose={() => {
+            setShowImportModal(false);
+            setImportProgress({ status: 'idle', message: '', details: null });
+            setPendingDuplicates([]);
+            setPendingValidClients([]);
+          }}
+          onFileSelect={handleFileSelect}
+          progress={importProgress}
+          onInsertValid={handleInsertValidClients}
+          onDeleteDuplicates={handleDeleteDuplicatesAndInsert}
+          pendingValidCount={pendingValidClients.length}
+          pendingDuplicatesCount={pendingDuplicates.length}
         />
       )}
     </div>
@@ -1381,7 +1867,7 @@ const ConversationsTab = ({
 };
 
 // Componente de Tab de Clientes
-const ClientsTab = ({ clients, loading, onAddClient, onLoadMore, hasMore, loadingMore, searchTerm, onSearch }) => {
+const ClientsTab = ({ clients, loading, onAddClient, onLoadMore, hasMore, loadingMore, searchTerm, onSearch, onOpenImportModal }) => {
   const [localSearch, setLocalSearch] = useState(searchTerm);
 
   const handleSearchChange = (e) => {
@@ -1424,6 +1910,17 @@ const ClientsTab = ({ clients, loading, onAddClient, onLoadMore, hasMore, loadin
           </div>
           
           <div className="flex flex-col sm:flex-row gap-3">
+            {/* Botón Subir Archivo */}
+            <button
+              onClick={onOpenImportModal}
+              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2.5 px-5 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center justify-center space-x-2 whitespace-nowrap"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              <span>Subir archivo</span>
+            </button>
+
             {/* Buscador */}
             <form onSubmit={handleSearchSubmit} className="relative flex-1 sm:flex-initial">
               <input
@@ -2177,6 +2674,283 @@ const AddClientModal = ({ onClose, onSave }) => {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+};
+
+// Componente Modal de Importación CSV
+const ImportCSVModal = ({ onClose, onFileSelect, progress, onInsertValid, onDeleteDuplicates, pendingValidCount, pendingDuplicatesCount }) => {
+  const fileInputRef = React.useRef(null);
+  const [dragActive, setDragActive] = React.useState(false);
+
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
+        onFileSelect({ target: { files: [file] } });
+      } else {
+        alert('Por favor selecciona un archivo CSV válido');
+      }
+    }
+  };
+
+  const handleClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-6 py-5 rounded-t-2xl">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-white bg-opacity-20 rounded-lg flex items-center justify-center">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold">Importar Clientes desde CSV</h2>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 transition-all"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="p-6">
+          {progress.status === 'idle' && (
+            <>
+              {/* Instrucciones */}
+              <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h3 className="font-semibold text-blue-900 mb-2 flex items-center">
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Formato del archivo CSV
+                </h3>
+                <p className="text-sm text-blue-800 mb-2">El archivo debe contener las siguientes columnas:</p>
+                <ul className="text-sm text-blue-700 space-y-1 ml-4">
+                  <li>• <strong>Número</strong> (N° de orden - requerido)</li>
+                  <li>• <strong>Nombre del activo</strong> (Contrato)</li>
+                  <li>• <strong>Tipo de orden de trabajo</strong> (Servicio)</li>
+                  <li>• <strong>Detalle del estado</strong> (Estado)</li>
+                  <li>• <strong>Fecha</strong></li>
+                  <li>• <strong>Cuenta: Nombre de la cuenta</strong> (Nombre completo - requerido)</li>
+                  <li>• <strong>Principal</strong> (Teléfono)</li>
+                  <li>• <strong>Secundaria</strong> (Teléfono fijo)</li>
+                  <li>• <strong>Dirección completa: Address Name</strong></li>
+                  <li>• <strong>Zip</strong> (Código postal)</li>
+                  <li>• <strong>Ciudad</strong> (Municipio)</li>
+                </ul>
+              </div>
+
+              {/* Drag & Drop Area */}
+              <div
+                className={`border-3 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer ${
+                  dragActive
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
+                }`}
+                onDragEnter={handleDrag}
+                onDragLeave={handleDrag}
+                onDragOver={handleDrag}
+                onDrop={handleDrop}
+                onClick={handleClick}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv"
+                  onChange={onFileSelect}
+                  className="hidden"
+                />
+                <div className="flex flex-col items-center space-y-4">
+                  <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center">
+                    <svg className="w-10 h-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold text-gray-700 mb-1">
+                      Arrastra tu archivo CSV aquí
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      o haz clic para seleccionar
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
+                  >
+                    Seleccionar archivo
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {progress.status === 'processing' && (
+            <div className="text-center py-12">
+              <div className="inline-block animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mb-4"></div>
+              <p className="text-lg font-semibold text-gray-700">{progress.message}</p>
+              <p className="text-sm text-gray-500 mt-2">Por favor espera...</p>
+            </div>
+          )}
+
+          {progress.status === 'success' && progress.details && (
+            <div className="space-y-4">
+              <div className="text-center py-6">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">{progress.message}</h3>
+              </div>
+
+              {/* Resumen */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-blue-50 rounded-lg p-4 text-center">
+                  <p className="text-2xl font-bold text-blue-600">{progress.details.total}</p>
+                  <p className="text-sm text-blue-800">Total registros</p>
+                </div>
+                <div className="bg-green-50 rounded-lg p-4 text-center">
+                  <p className="text-2xl font-bold text-green-600">{progress.details.validCount || progress.details.inserted}</p>
+                  <p className="text-sm text-green-800">{progress.details.hasPendingValid ? 'Válidos' : 'Importados'}</p>
+                </div>
+                <div className="bg-yellow-50 rounded-lg p-4 text-center">
+                  <p className="text-2xl font-bold text-yellow-600">{progress.details.duplicates}</p>
+                  <p className="text-sm text-yellow-800">Duplicados</p>
+                </div>
+                <div className="bg-red-50 rounded-lg p-4 text-center">
+                  <p className="text-2xl font-bold text-red-600">{progress.details.errors}</p>
+                  <p className="text-sm text-red-800">Errores</p>
+                </div>
+              </div>
+
+              {/* Detalles de duplicados */}
+              {progress.details.duplicatesList && progress.details.duplicatesList.length > 0 && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 max-h-40 overflow-y-auto">
+                  <h4 className="font-semibold text-yellow-900 mb-2">Registros duplicados detectados:</h4>
+                  <ul className="text-sm text-yellow-800 space-y-1">
+                    {progress.details.duplicatesList.slice(0, 10).map((dup, idx) => (
+                      <li key={idx}>• {dup}</li>
+                    ))}
+                    {progress.details.duplicatesList.length > 10 && (
+                      <li className="font-semibold">... y {progress.details.duplicatesList.length - 10} más</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              {/* Detalles de errores */}
+              {progress.details.errorsList && progress.details.errorsList.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-h-40 overflow-y-auto">
+                  <h4 className="font-semibold text-red-900 mb-2">Errores encontrados:</h4>
+                  <ul className="text-sm text-red-800 space-y-1">
+                    {progress.details.errorsList.slice(0, 10).map((err, idx) => (
+                      <li key={idx}>• {err}</li>
+                    ))}
+                    {progress.details.errorsList.length > 10 && (
+                      <li className="font-semibold">... y {progress.details.errorsList.length - 10} más</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              {/* Botones de acción cuando hay pendientes */}
+              {(progress.details.hasPendingValid || progress.details.hasPendingDuplicates) && (
+                <div className="space-y-3 pt-2">
+                  {/* Botón para insertar solo los válidos (no duplicados) */}
+                  {pendingValidCount > 0 && progress.details.hasPendingValid && (
+                    <button
+                      onClick={onInsertValid}
+                      className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center space-x-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      <span>Importar solo válidos ({pendingValidCount})</span>
+                    </button>
+                  )}
+
+                  {/* Botón para eliminar duplicados e insertar todo */}
+                  {pendingDuplicatesCount > 0 && progress.details.hasPendingDuplicates && (
+                    <button
+                      onClick={onDeleteDuplicates}
+                      className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center space-x-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      <span>Reemplazar duplicados e importar todo ({pendingValidCount + pendingDuplicatesCount})</span>
+                    </button>
+                  )}
+
+                  {/* Botón cancelar */}
+                  <button
+                    onClick={onClose}
+                    className="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-3 rounded-lg transition-all duration-200"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+
+              {/* Botón cerrar cuando ya se completó la importación */}
+              {!progress.details.hasPendingValid && !progress.details.hasPendingDuplicates && (
+                <button
+                  onClick={onClose}
+                  className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
+                >
+                  Cerrar
+                </button>
+              )}
+            </div>
+          )}
+
+          {progress.status === 'error' && (
+            <div className="text-center py-12">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">{progress.message}</h3>
+              {progress.details?.error && (
+                <p className="text-sm text-red-600 mb-6">{progress.details.error}</p>
+              )}
+              <button
+                onClick={onClose}
+                className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
+              >
+                Cerrar
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
