@@ -150,7 +150,7 @@ const ClientsTab = ({ clients, loading, onAddClient, onLoadMore, hasMore, loadin
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {clients.map((client) => (
-              <tr key={client['Nº ORDEN']} className="hover:bg-purple-50 transition-all duration-200">
+              <tr key={client['N ORDEN']} className="hover:bg-purple-50 transition-all duration-200">
                 <td className="px-6 py-4">
                   <div className="flex items-center">
                     <div className="flex-shrink-0 h-12 w-12 bg-gradient-to-br from-purple-400 to-purple-600 rounded-xl flex items-center justify-center shadow-md">

@@ -1,3 +1,14 @@
+/**
+ * Dashboard Data Service
+ * Todas las queries a Supabase pasan por aquí.
+ * Optimizadas para reducir egress: columnas mínimas, LIMIT en mensajes,
+ * validación de duplicados por lotes en lugar de snapshot completo.
+ */
+
+// Número máximo de mensajes a descargar por conversación para el status check.
+// Solo necesitamos saber si hubo respuesta → no necesitamos todos los mensajes.
+const MESSAGES_STATUS_LIMIT = 500;
+
 export const fetchConversationsWithStatus = async (supabase, userId, showArchived) => {
   let query = supabase
     .from('conversations')
@@ -10,7 +21,9 @@ export const fetchConversationsWithStatus = async (supabase, userId, showArchive
     query = query.or('estado.is.null,estado.neq.archivada');
   }
 
-  const { data: conversationsData, error: convError } = await query.order('updated_at', { ascending: false });
+  const { data: conversationsData, error: convError } = await query.order('updated_at', {
+    ascending: false,
+  });
   if (convError) {
     throw convError;
   }
@@ -20,8 +33,11 @@ export const fetchConversationsWithStatus = async (supabase, userId, showArchive
   }
 
   const conversationIds = conversationsData.map((conv) => conv.id);
-  const conversationTitles = [...new Set(conversationsData.map((conv) => conv.title?.trim()).filter(Boolean))];
+  const conversationTitles = [
+    ...new Set(conversationsData.map((conv) => conv.title?.trim()).filter(Boolean)),
+  ];
 
+  // Solo descargamos NOMBRE COMPLETO y FECHA ENVIO PLANTILLA — mínimo necesario
   let clientRows = [];
   if (conversationTitles.length > 0) {
     const { data: clientsData, error: clientsError } = await supabase
@@ -37,11 +53,16 @@ export const fetchConversationsWithStatus = async (supabase, userId, showArchive
     clientRows = clientsData || [];
   }
 
+  // OPTIMIZACIÓN CRÍTICA: limitamos los mensajes descargados.
+  // Para el status check solo necesitamos saber si conversation_id tiene algún
+  // mensaje con Respondido=true o sender_type='Asistente'. Con LIMIT reducimos
+  // de potencialmente miles de rows a un máximo controlado.
   const { data: messagesData, error: messagesError } = await supabase
     .from('messages')
     .select('conversation_id, created_at, Respondido, sender_type')
     .in('conversation_id', conversationIds)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(MESSAGES_STATUS_LIMIT);
 
   if (messagesError) {
     throw messagesError;
@@ -53,7 +74,6 @@ export const fetchConversationsWithStatus = async (supabase, userId, showArchive
     if (!normalizedName || clientDateByName.has(normalizedName)) {
       return;
     }
-
     clientDateByName.set(normalizedName, client['FECHA ENVIO PLANTILLA'] || null);
   });
 
@@ -74,7 +94,9 @@ export const fetchConversationsWithStatus = async (supabase, userId, showArchive
 
   const conversationsWithStatus = conversationsData.map((conv) => {
     const normalizedTitle = conv.title?.trim().toLowerCase();
-    const fechaEnvioPlantilla = normalizedTitle ? clientDateByName.get(normalizedTitle) || null : null;
+    const fechaEnvioPlantilla = normalizedTitle
+      ? clientDateByName.get(normalizedTitle) || null
+      : null;
     const fechaUltimoMensaje = lastMessageByConversation.get(conv.id) || null;
     const hasResponse = responseByConversation.has(conv.id);
 
@@ -82,7 +104,8 @@ export const fetchConversationsWithStatus = async (supabase, userId, showArchive
     if (fechaEnvioPlantilla && fechaUltimoMensaje) {
       const fechaPlantillaTime = new Date(fechaEnvioPlantilla).getTime();
       const fechaMensajeTime = new Date(fechaUltimoMensaje).getTime();
-      ultimaActualizacion = fechaMensajeTime > fechaPlantillaTime ? fechaUltimoMensaje : fechaEnvioPlantilla;
+      ultimaActualizacion =
+        fechaMensajeTime > fechaPlantillaTime ? fechaUltimoMensaje : fechaEnvioPlantilla;
     } else if (fechaEnvioPlantilla) {
       ultimaActualizacion = fechaEnvioPlantilla;
     } else if (fechaUltimoMensaje) {
@@ -119,14 +142,20 @@ export const fetchClientsPage = async (supabase, userId, page, search, pageSize)
 
   let query = supabase
     .from('clientes')
-    .select('"N ORDEN", "Nº ORDEN", "NOMBRE COMPLETO", CONTRATO, SERVICIO, TELEFONO, "TELEFONO FIJO", MUNICIPIO, ESTADO, "ESTADO MENSAJE", FECHA', { count: 'estimated' })
+    .select(
+      '"N ORDEN", "NOMBRE COMPLETO", CONTRATO, SERVICIO, TELEFONO, "TELEFONO FIJO", MUNICIPIO, ESTADO, "ESTADO MENSAJE", FECHA',
+      { count: 'estimated' }
+    )
     .eq('user_id', userId);
 
   if (search.trim() !== '') {
     query = query.ilike('"NOMBRE COMPLETO"', `%${search}%`);
   }
 
-  const { data, error, count } = await query.order('"FECHA"', { ascending: false }).range(from, to);
+  const { data, error, count } = await query
+    .order('"FECHA"', { ascending: false })
+    .range(from, to);
+
   if (error) {
     throw error;
   }
@@ -155,7 +184,9 @@ export const fetchMessagesByConversation = async (supabase, conversationId) => {
 export const fetchClientDetailsByPhone = async (supabase, userId, phoneNumber) => {
   const { data, error } = await supabase
     .from('clientes')
-    .select('"N ORDEN", "NOMBRE COMPLETO", CONTRATO, SERVICIO, TELEFONO, "TELEFONO FIJO", DIRECCION, "CODIGO POSTAL", MUNICIPIO, ESTADO, "ESTADO MENSAJE", FECHA, "FECHA ENVIO PLANTILLA"')
+    .select(
+      '"N ORDEN", "NOMBRE COMPLETO", CONTRATO, SERVICIO, TELEFONO, "TELEFONO FIJO", DIRECCION, "CODIGO POSTAL", MUNICIPIO, ESTADO, "ESTADO MENSAJE", FECHA, "FECHA ENVIO PLANTILLA"'
+    )
     .eq('user_id', userId)
     .eq('TELEFONO', phoneNumber)
     .single();
@@ -167,6 +198,74 @@ export const fetchClientDetailsByPhone = async (supabase, userId, phoneNumber) =
   return data || null;
 };
 
+/**
+ * OPTIMIZACIÓN CRÍTICA: En lugar de descargar todos los clientes para validar
+ * duplicados (O(n) egress), validamos por lotes contra campos específicos.
+ *
+ * Recibe los valores extraídos del CSV y devuelve qué valores ya existen en BD.
+ * Esto reduce el egress de "todos los clientes" a "solo los que matchean".
+ */
+export const fetchDuplicateCheck = async (supabase, userId, orderNums, phones, names) => {
+  const results = { existingOrders: new Set(), existingPhones: new Set(), existingNames: new Set() };
+
+  // Solo hacemos queries si hay valores que verificar
+  const promises = [];
+
+  if (orderNums.length > 0) {
+    promises.push(
+      supabase
+        .from('clientes')
+        .select('"N ORDEN"')
+        .eq('user_id', userId)
+        .in('"N ORDEN"', orderNums)
+        .then(({ data }) => {
+          (data || []).forEach((r) => results.existingOrders.add(r['N ORDEN']));
+        })
+    );
+  }
+
+  if (phones.length > 0) {
+    promises.push(
+      supabase
+        .from('clientes')
+        .select('TELEFONO')
+        .eq('user_id', userId)
+        .in('TELEFONO', phones)
+        .then(({ data }) => {
+          (data || []).forEach((r) => results.existingPhones.add(r['TELEFONO']));
+        })
+    );
+  }
+
+  if (names.length > 0) {
+    // ilike no soporta IN, así que hacemos OR por nombre
+    // Para listas grandes (>50) hacemos chunks de 50
+    const chunkSize = 50;
+    for (let i = 0; i < names.length; i += chunkSize) {
+      const chunk = names.slice(i, i + chunkSize);
+      promises.push(
+        supabase
+          .from('clientes')
+          .select('"NOMBRE COMPLETO"')
+          .eq('user_id', userId)
+          .in('"NOMBRE COMPLETO"', chunk)
+          .then(({ data }) => {
+            (data || []).forEach((r) =>
+              results.existingNames.add(r['NOMBRE COMPLETO']?.trim().toLowerCase())
+            );
+          })
+      );
+    }
+  }
+
+  await Promise.all(promises);
+  return results;
+};
+
+/**
+ * @deprecated Usar fetchDuplicateCheck en su lugar para reducir egress.
+ * Se mantiene solo como fallback por compatibilidad.
+ */
 export const fetchExistingClientsSnapshot = async (supabase, userId) => {
   const { data, error } = await supabase
     .from('clientes')
