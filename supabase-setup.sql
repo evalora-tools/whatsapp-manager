@@ -10,6 +10,7 @@ ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCAD
 
 -- Crear índice para mejorar rendimiento
 CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON public.conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_id_id ON public.conversations(user_id, id);
 
 -- 2. MODIFICAR TABLA CLIENTES
 -- Agregar columna user_id para asociar clientes con usuarios
@@ -18,6 +19,14 @@ ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCAD
 
 -- Crear índice para mejorar rendimiento
 CREATE INDEX IF NOT EXISTS idx_clientes_user_id ON public.clientes(user_id);
+CREATE INDEX IF NOT EXISTS idx_clientes_user_id_nombre_completo ON public.clientes(user_id, "NOMBRE COMPLETO");
+CREATE INDEX IF NOT EXISTS idx_clientes_user_id_telefono ON public.clientes(user_id, "TELEFONO");
+
+-- Índices para optimizar consultas de mensajes por conversación
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON public.messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at ON public.messages(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_respondido ON public.messages(conversation_id, "Respondido");
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_sender_type ON public.messages(conversation_id, sender_type);
 
 -- 3. HABILITAR ROW LEVEL SECURITY (RLS)
 -- Esto asegura que cada usuario solo vea sus propios datos

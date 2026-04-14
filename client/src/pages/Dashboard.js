@@ -1,5 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
+import {
+  fetchConversationsWithStatus,
+  fetchClientsPage,
+  fetchMessagesByConversation,
+  fetchClientDetailsByPhone,
+  fetchExistingClientsSnapshot,
+} from '../services/dashboardDataService';
+import {
+  parseCsvText,
+  buildColumnMapping,
+  hasRequiredColumns,
+  mapCsvRowToClient,
+} from '../utils/csvImportUtils';
+import ConversationsTab from '../components/ConversationsTab';
+import ClientsTab from '../components/ClientsTab';
+import ConversationModal from '../components/ConversationModal';
+import AddClientModal from '../components/AddClientModal';
+import ImportCSVModal from '../components/ImportCSVModal';
 
 const Dashboard = () => {
   const [user, setUser] = useState(null);
@@ -28,173 +46,56 @@ const Dashboard = () => {
   const CLIENTS_PER_PAGE = 10;
 
   useEffect(() => {
-    getUser();
-    getConversations();
-    getClients(1, '');
-    
-    // Refrescar conversaciones cada 30 segundos para detectar nuevas respuestas
-    const intervalId = setInterval(() => {
-      getConversations();
-    }, 30000);
-    
-    // Limpiar el intervalo cuando el componente se desmonte
-    return () => clearInterval(intervalId);
+    const initializeData = async () => {
+      const currentUser = await getCurrentUser();
+      if (!currentUser?.id) {
+        setLoading(false);
+        return;
+      }
+
+      await Promise.all([
+        getConversations(currentUser),
+        getClients(1, '', currentUser)
+      ]);
+    };
+
+    initializeData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Recargar conversaciones cuando cambie el filtro de archivadas
   useEffect(() => {
-    getConversations();
+    if (user?.id) {
+      getConversations(user);
+    }
     // Limpiar selección al cambiar de vista
     setSelectedConversations([]);
     setSelectionMode(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived]);
+  }, [showArchived, user]);
 
   const getUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     setUser(user);
+    return user;
   };
 
-  const getConversations = async () => {
+  const getCurrentUser = async () => {
+    if (user?.id) {
+      return user;
+    }
+
+    return getUser();
+  };
+
+  const getConversations = async (currentUser = null) => {
     try {
-      // Obtener el user_id del usuario autenticado
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      // Obtener conversaciones con información de mensajes
-      let query = supabase
-        .from('conversations')
-        .select('*')
-        .eq('user_id', user.id);
-      
-      // Filtrar por estado archivado o no
-      if (showArchived) {
-        query = query.eq('estado', 'archivada');
-      } else {
-        query = query.or('estado.is.null,estado.neq.archivada');
+      const activeUser = currentUser || (await getCurrentUser());
+      if (!activeUser?.id) {
+        return;
       }
-      
-      const { data: conversationsData, error: convError } = await query
-        .order('updated_at', { ascending: false });
-      
-      if (convError) throw convError;
-      
-      // Para cada conversación, verificar si hay mensajes respondidos y obtener fecha de envío de plantilla
-      const conversationsWithStatus = await Promise.all(
-        (conversationsData || []).map(async (conv) => {
-          // Obtener la fecha de envío de plantilla del cliente usando el nombre completo (title)
-          const { data: clientData } = await supabase
-            .from('clientes')
-            .select('"FECHA ENVIO PLANTILLA"')
-            .eq('NOMBRE COMPLETO', conv.title?.trim())
-            .maybeSingle();
-          
-          // Obtener el último mensaje de la conversación (de cualquier tipo)
-          const { data: lastMessage } = await supabase
-            .from('messages')
-            .select('created_at')
-            .eq('conversation_id', conv.id)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          
-          // Buscar mensajes con Respondido = true (respuestas del cliente)
-          const { data: messages } = await supabase
-            .from('messages')
-            .select('Respondido, sender_type, created_at')
-            .eq('conversation_id', conv.id)
-            .eq('Respondido', true)
-            .order('created_at', { ascending: false })
-            .limit(1);
-          
-          // También verificar por sender_type = 'Asistente' como alternativa
-          if (!messages || messages.length === 0) {
-            const { data: assistantMessages } = await supabase
-              .from('messages')
-              .select('sender_type, created_at')
-              .eq('conversation_id', conv.id)
-              .eq('sender_type', 'Asistente')
-              .order('created_at', { ascending: false })
-              .limit(1);
-            
-            const hasResponse = assistantMessages && assistantMessages.length > 0;
-            
-            // Calcular la fecha más reciente entre la fecha de envío de plantilla y el último mensaje
-            const fechaEnvioPlantilla = clientData?.['FECHA ENVIO PLANTILLA'];
-            const fechaUltimoMensaje = lastMessage?.created_at;
-            
-            let ultimaActualizacion = conv.updated_at;
-            if (fechaEnvioPlantilla && fechaUltimoMensaje) {
-              const fechaPlantillaTime = new Date(fechaEnvioPlantilla).getTime();
-              const fechaMensajeTime = new Date(fechaUltimoMensaje).getTime();
-              ultimaActualizacion = fechaMensajeTime > fechaPlantillaTime ? fechaUltimoMensaje : fechaEnvioPlantilla;
-            } else if (fechaEnvioPlantilla) {
-              ultimaActualizacion = fechaEnvioPlantilla;
-            } else if (fechaUltimoMensaje) {
-              ultimaActualizacion = fechaUltimoMensaje;
-            }
-            
-            return {
-              ...conv,
-              hasResponse,
-              lastMessageTime: assistantMessages && assistantMessages.length > 0 ? assistantMessages[0].created_at : conv.updated_at,
-              fechaEnvioPlantilla: fechaEnvioPlantilla || null,
-              ultimaActualizacion: ultimaActualizacion
-            };
-          }
-          
-          const hasResponse = messages && messages.length > 0;
-          
-          // Calcular la fecha más reciente entre la fecha de envío de plantilla y el último mensaje
-          const fechaEnvioPlantilla = clientData?.['FECHA ENVIO PLANTILLA'];
-          const fechaUltimoMensaje = lastMessage?.created_at;
-          
-          let ultimaActualizacion = conv.updated_at;
-          if (fechaEnvioPlantilla && fechaUltimoMensaje) {
-            const fechaPlantillaTime = new Date(fechaEnvioPlantilla).getTime();
-            const fechaMensajeTime = new Date(fechaUltimoMensaje).getTime();
-            ultimaActualizacion = fechaMensajeTime > fechaPlantillaTime ? fechaUltimoMensaje : fechaEnvioPlantilla;
-          } else if (fechaEnvioPlantilla) {
-            ultimaActualizacion = fechaEnvioPlantilla;
-          } else if (fechaUltimoMensaje) {
-            ultimaActualizacion = fechaUltimoMensaje;
-          }
-          
-          return {
-            ...conv,
-            hasResponse,
-            lastMessageTime: messages && messages.length > 0 ? messages[0].created_at : conv.updated_at,
-            fechaEnvioPlantilla: fechaEnvioPlantilla || null,
-            ultimaActualizacion: ultimaActualizacion
-          };
-        })
-      );
-      
-      // Ordenar por última actualización (más reciente primero)
-      conversationsWithStatus.sort((a, b) => {
-        try {
-          const dateA = a.ultimaActualizacion ? new Date(a.ultimaActualizacion) : new Date(0);
-          const dateB = b.ultimaActualizacion ? new Date(b.ultimaActualizacion) : new Date(0);
-          
-          // Verificar que las fechas sean válidas
-          const timeA = !isNaN(dateA.getTime()) ? dateA.getTime() : 0;
-          const timeB = !isNaN(dateB.getTime()) ? dateB.getTime() : 0;
-          
-          return timeB - timeA;
-        } catch (e) {
-          return 0;
-        }
-      });
-      
-      // Log para depuración
-      const withResponses = conversationsWithStatus.filter(c => c.hasResponse);
-      console.log('Total conversaciones:', conversationsWithStatus.length);
-      console.log('Con respuestas:', withResponses.length);
-      console.log('Detalles:', conversationsWithStatus.map(c => ({
-        id: c.id,
-        hasResponse: c.hasResponse
-      })));
-      
+
+      const conversationsWithStatus = await fetchConversationsWithStatus(supabase, activeUser.id, showArchived);
       setConversations(conversationsWithStatus);
     } catch (error) {
       console.error('Error fetching conversations:', error);
@@ -203,31 +104,23 @@ const Dashboard = () => {
     }
   };
 
-  const getClients = async (page = 1, search = '') => {
+  const getClients = async (page = 1, search = '', currentUser = null) => {
     try {
-      // Obtener el user_id del usuario autenticado
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      // Calcular el rango para la paginación
-      const from = (page - 1) * CLIENTS_PER_PAGE;
-      const to = from + CLIENTS_PER_PAGE - 1;
-      
-      let query = supabase
-        .from('clientes')
-        .select('*', { count: 'exact' })
-        .eq('user_id', user.id); // Filtrar por user_id
-      
-      // Aplicar búsqueda si existe
-      if (search.trim() !== '') {
-        query = query.ilike('"NOMBRE COMPLETO"', `%${search}%`);
+      const activeUser = currentUser || (await getCurrentUser());
+      if (!activeUser?.id) {
+        setClients([]);
+        setHasMoreClients(false);
+        setTotalClients(0);
+        return;
       }
       
-      // Aplicar paginación y ordenar
-      const { data, error, count } = await query
-        .order('"FECHA"', { ascending: false })
-        .range(from, to);
-      
-      if (error) throw error;
+      const { data, count, hasMore } = await fetchClientsPage(
+        supabase,
+        activeUser.id,
+        page,
+        search,
+        CLIENTS_PER_PAGE
+      );
       
       // Si es página 1, reemplazar; si no, agregar
       if (page === 1) {
@@ -239,8 +132,8 @@ const Dashboard = () => {
       // Guardar el total de clientes
       setTotalClients(count || 0);
       
-      // Verificar si hay más clientes
-      setHasMoreClients((count || 0) > page * CLIENTS_PER_PAGE);
+      // Verificar si hay más clientes sin depender de conteo exacto
+      setHasMoreClients(hasMore);
       
     } catch (error) {
       console.error('Error fetching clients:', error);
@@ -267,13 +160,7 @@ const Dashboard = () => {
   const getMessages = async (conversationId) => {
     setLoadingMessages(true);
     try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true });
-      
-      if (error) throw error;
+      const data = await fetchMessagesByConversation(supabase, conversationId);
       setMessages(data || []);
     } catch (error) {
       console.error('Error fetching messages:', error);
@@ -294,13 +181,15 @@ const Dashboard = () => {
 
   const handleAddClient = async (clientData) => {
     try {
-      // Obtener el user_id del usuario autenticado
-      const { data: { user } } = await supabase.auth.getUser();
+      const activeUser = await getCurrentUser();
+      if (!activeUser?.id) {
+        throw new Error('No se encontró un usuario autenticado');
+      }
       
       // Agregar el user_id a los datos del cliente
       const clientWithUserId = {
         ...clientData,
-        user_id: user.id
+        user_id: activeUser.id
       };
 
       const { error } = await supabase
@@ -457,103 +346,13 @@ const Dashboard = () => {
 
     try {
       const text = await file.text();
-      const lines = text.split('\n').filter(line => line.trim());
+      const { separator, headers, rows } = parseCsvText(text);
       
-      if (lines.length < 2) {
-        throw new Error('El archivo CSV está vacío o no tiene datos');
-      }
-
-      // Detectar el separador (coma o punto y coma)
-      const firstLine = lines[0];
-      const semicolonCount = (firstLine.match(/;/g) || []).length;
-      const commaCount = (firstLine.match(/,/g) || []).length;
-      const separator = semicolonCount > commaCount ? ';' : ',';
-      
-      console.log(`Separador detectado: "${separator}" (comas: ${commaCount}, punto y coma: ${semicolonCount})`);
-
-      // Parsear CSV con el separador detectado
-      const parseCSVLine = (line, sep) => {
-        const values = [];
-        let current = '';
-        let inQuotes = false;
-        
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i];
-          if (char === '"') {
-            inQuotes = !inQuotes;
-          } else if (char === sep && !inQuotes) {
-            values.push(current.trim().replace(/^"|"$/g, ''));
-            current = '';
-          } else {
-            current += char;
-          }
-        }
-        values.push(current.trim().replace(/^"|"$/g, ''));
-        return values;
-      };
-
-      const headers = parseCSVLine(lines[0], separator);
-      const rows = lines.slice(1).map(line => parseCSVLine(line, separator));
+      console.log(`Separador detectado: "${separator}"`);
 
       // Mapear columnas del CSV al esquema de Supabase
       // Detectamos las columnas por su contenido o nombre parcial
-      const columnMapping = {};
-      
-      headers.forEach((header, index) => {
-        // Limpiar el header: quitar espacios y convertir a minúsculas
-        // Eliminar TODOS los caracteres que no sean letras básicas, números o espacios
-        const cleanHeader = header.trim().toLowerCase()
-          .replace(/[^a-z0-9\s:]/gi, '')  // Quitar TODO excepto letras básicas, números, espacios y :
-          .replace(/\s+/g, ' ')  // Normalizar espacios múltiples
-          .trim();
-        
-        console.log(`Header ${index}: "${header}" -> limpio: "${cleanHeader}"`);
-        
-        // Columna 1: Número -> N ORDEN (viene como "nmero" después de limpiar)
-        if (cleanHeader === 'nmero' || cleanHeader === 'numero' || cleanHeader.match(/^n.?mero$/)) {
-          columnMapping[header] = 'N ORDEN';
-        }
-        // Columna 2: Nombre del producto activo -> CONTRATO
-        else if (cleanHeader.includes('nombre del producto') || cleanHeader.includes('producto activo')) {
-          columnMapping[header] = 'CONTRATO';
-        }
-        // Columna 3: Tipo de orden de trabajo -> SERVICIO
-        else if (cleanHeader.includes('tipo de orden') || cleanHeader.includes('orden de trabajo')) {
-          columnMapping[header] = 'SERVICIO';
-        }
-        // Columna 4: Detalle del estado -> ESTADO
-        else if (cleanHeader.includes('detalle') && cleanHeader.includes('estado')) {
-          columnMapping[header] = 'ESTADO';
-        }
-        // Columna 5: Fecha
-        else if (cleanHeader === 'fecha' || cleanHeader.startsWith('fecha')) {
-          columnMapping[header] = 'FECHA';
-        }
-        // Columna 6: Cuenta: Nombre de la cuenta -> NOMBRE COMPLETO
-        else if (cleanHeader.includes('cuenta') && cleanHeader.includes('nombre')) {
-          columnMapping[header] = 'NOMBRE COMPLETO';
-        }
-        // Columna 7: Principal -> TELEFONO
-        else if (cleanHeader === 'principal') {
-          columnMapping[header] = 'TELEFONO';
-        }
-        // Columna 8: secundario -> TELEFONO FIJO
-        else if (cleanHeader === 'secundario' || cleanHeader.includes('secundar')) {
-          columnMapping[header] = 'TELEFONO FIJO';
-        }
-        // Columna 9: Dirección completa -> DIRECCION (viene como "direccin completa" o "direccn")
-        else if (cleanHeader.includes('direcc') || cleanHeader.includes('address')) {
-          columnMapping[header] = 'DIRECCION';
-        }
-        // Columna 10: Zip -> CODIGO POSTAL
-        else if (cleanHeader === 'zip' || cleanHeader.includes('codigo postal') || cleanHeader === 'cp') {
-          columnMapping[header] = 'CODIGO POSTAL';
-        }
-        // Columna 11: Ciudad -> MUNICIPIO
-        else if (cleanHeader === 'ciudad' || cleanHeader.includes('municipio')) {
-          columnMapping[header] = 'MUNICIPIO';
-        }
-      });
+      const columnMapping = buildColumnMapping(headers);
       
       console.log('Encabezados CSV detectados:', headers);
       console.log('Primera fila de datos:', rows[0]);
@@ -566,40 +365,25 @@ const Dashboard = () => {
       }
       
       // Verificar que se encontraron las columnas críticas
-      const hasNOrden = Object.values(columnMapping).includes('N ORDEN');
-      const hasNombreCompleto = Object.values(columnMapping).includes('NOMBRE COMPLETO');
+      const { hasNOrden, hasNombreCompleto } = hasRequiredColumns(columnMapping);
       
       console.log(`Columnas críticas encontradas - N ORDEN: ${hasNOrden}, NOMBRE COMPLETO: ${hasNombreCompleto}`);
       
       if (!hasNOrden || !hasNombreCompleto) {
-        const errorMsg = `No se pudieron encontrar las columnas requeridas en el CSV.\n\nColumnas detectadas:\n${headers.map((h, i) => `${i + 1}. "${h}"`).join('\n')}\n\nAsegúrate de que el archivo tenga columnas como "Número" y "Cuenta: Nombre de la cuenta" o similar.`;
+        const errorMsg = `No se pudieron encontrar las columnas requeridas en el CSV.\n\nColumnas detectadas:\n${headers.map((h, i) => `${i + 1}. "${h}"`).join('\n')}\n\nFormatos soportados:\n1) Legacy: "Número" + "Cuenta: Nombre de la cuenta"\n2) Nuevo: "N ORDEN" + "nombre"`;
         console.error(errorMsg);
         throw new Error(errorMsg);
       }
       
       // Prueba: verificar la estructura de la tabla
-      const { data: testData, error: testError } = await supabase
-        .from('clientes')
-        .select('*')
-        .limit(1);
-      
-      if (testData && testData.length > 0) {
-        console.log('Columnas existentes en la tabla:', Object.keys(testData[0]));
-      }
-
       // Obtener el user_id del usuario autenticado
-      const { data: { user } } = await supabase.auth.getUser();
+      const activeUser = await getCurrentUser();
+      if (!activeUser?.id) {
+        throw new Error('No se encontró un usuario autenticado');
+      }
 
       // Obtener clientes existentes del usuario para validar duplicados
-      const { data: existingClients, error: fetchError } = await supabase
-        .from('clientes')
-        .select('"N ORDEN", "TELEFONO", "NOMBRE COMPLETO"')
-        .eq('user_id', user.id);
-
-      if (fetchError) {
-        console.error('Error al obtener clientes existentes:', fetchError);
-        throw fetchError;
-      }
+      const existingClients = await fetchExistingClientsSnapshot(supabase, activeUser.id);
 
       const existingOrders = new Set(existingClients?.map(c => c['N ORDEN']) || []);
       const existingPhones = new Set(existingClients?.map(c => c['TELEFONO']) || []);
@@ -615,37 +399,11 @@ const Dashboard = () => {
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
-        const client = { user_id: user.id };
+        const client = { user_id: activeUser.id };
 
         // Mapear cada columna
-        headers.forEach((header, index) => {
-          const dbColumn = columnMapping[header];
-          if (dbColumn) {
-            let value = row[index] || null;
-            
-            // Limpiar valor (quitar espacios extra)
-            if (value && typeof value === 'string') {
-              value = value.trim();
-              if (value === '' || value === 'null' || value === 'undefined' || value.startsWith('#¿')) {
-                value = null;
-              }
-            }
-            
-            // Convertir tipos de datos
-            if (dbColumn === 'N ORDEN' || dbColumn === 'TELEFONO' || dbColumn === 'CODIGO POSTAL') {
-              if (value) {
-                const numericValue = value.toString().replace(/\D/g, '');
-                value = numericValue ? parseInt(numericValue) : null;
-              } else {
-                value = null;
-              }
-            }
-            
-            client[dbColumn] = value;
-          } else if (index < 15) { // Log solo primeras 15 columnas
-            console.log(`Columna sin mapeo: "${header}" (índice ${index})`);
-          }
-        });
+        const mappedClient = mapCsvRowToClient(headers, row, columnMapping, activeUser.id);
+        Object.assign(client, mappedClient);
 
         if (i === 0) {
           console.log(`Primera fila mapeada:`, client);
@@ -686,7 +444,7 @@ const Dashboard = () => {
 
         if (name && existingNames.has(name)) {
           duplicates.push(`Fila ${i + 2}: Cliente "${client['NOMBRE COMPLETO']}" ya existe`);
-          duplicatesData.push({ client, reason: 'NOMBRE COMPLETO', key: name });
+          duplicatesData.push({ client, reason: 'NOMBRE COMPLETO', key: client['NOMBRE COMPLETO']?.trim() });
           console.log(`Duplicado en fila ${i + 2}: NOMBRE ya existe`);
           continue;
         }
@@ -791,62 +549,77 @@ const Dashboard = () => {
     setImportProgress({ status: 'processing', message: 'Eliminando duplicados e insertando nuevos...', details: null });
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const activeUser = await getCurrentUser();
+      if (!activeUser?.id) {
+        throw new Error('No se encontró un usuario autenticado');
+      }
       
       let deletedCount = 0;
       let insertedCount = 0;
       const errors = [];
 
       // Agrupar duplicados por tipo
-      const orderDuplicates = pendingDuplicates.filter(d => d.reason === 'N ORDEN');
-      const phoneDuplicates = pendingDuplicates.filter(d => d.reason === 'TELEFONO');
-      const nameDuplicates = pendingDuplicates.filter(d => d.reason === 'NOMBRE COMPLETO');
+      const uniqueOrderKeys = [...new Set(
+        pendingDuplicates
+          .filter(d => d.reason === 'N ORDEN')
+          .map(d => d.key)
+          .filter(key => key !== null && key !== undefined)
+      )];
+      const uniquePhoneKeys = [...new Set(
+        pendingDuplicates
+          .filter(d => d.reason === 'TELEFONO')
+          .map(d => d.key)
+          .filter(key => key !== null && key !== undefined)
+      )];
+      const uniqueNameKeys = [...new Set(
+        pendingDuplicates
+          .filter(d => d.reason === 'NOMBRE COMPLETO')
+          .map(d => d.key)
+          .filter(Boolean)
+      )];
 
-      // Eliminar duplicados por N ORDEN (uno por uno para mayor fiabilidad)
-      for (const dup of orderDuplicates) {
+      if (uniqueOrderKeys.length > 0) {
         const { error } = await supabase
           .from('clientes')
           .delete()
-          .eq('user_id', user.id)
-          .eq('N ORDEN', dup.key);
-        
+          .eq('user_id', activeUser.id)
+          .in('N ORDEN', uniqueOrderKeys);
+
         if (error) {
           console.error('Error eliminando por N ORDEN:', error);
-          errors.push(`Error eliminando N ORDEN ${dup.key}: ${error.message}`);
+          errors.push(`Error eliminando duplicados por N ORDEN: ${error.message}`);
         } else {
-          deletedCount++;
+          deletedCount += uniqueOrderKeys.length;
         }
       }
 
-      // Eliminar duplicados por TELEFONO (uno por uno)
-      for (const dup of phoneDuplicates) {
+      if (uniquePhoneKeys.length > 0) {
         const { error } = await supabase
           .from('clientes')
           .delete()
-          .eq('user_id', user.id)
-          .eq('TELEFONO', dup.key);
-        
+          .eq('user_id', activeUser.id)
+          .in('TELEFONO', uniquePhoneKeys);
+
         if (error) {
           console.error('Error eliminando por TELEFONO:', error);
-          errors.push(`Error eliminando TELEFONO ${dup.key}: ${error.message}`);
+          errors.push(`Error eliminando duplicados por TELEFONO: ${error.message}`);
         } else {
-          deletedCount++;
+          deletedCount += uniquePhoneKeys.length;
         }
       }
 
-      // Eliminar duplicados por NOMBRE COMPLETO
-      for (const dup of nameDuplicates) {
+      if (uniqueNameKeys.length > 0) {
         const { error } = await supabase
           .from('clientes')
           .delete()
-          .eq('user_id', user.id)
-          .ilike('NOMBRE COMPLETO', dup.key);
-        
+          .eq('user_id', activeUser.id)
+          .in('NOMBRE COMPLETO', uniqueNameKeys);
+
         if (error) {
           console.error('Error eliminando por NOMBRE:', error);
-          errors.push(`Error eliminando ${dup.key}: ${error.message}`);
+          errors.push(`Error eliminando duplicados por NOMBRE COMPLETO: ${error.message}`);
         } else {
-          deletedCount++;
+          deletedCount += uniqueNameKeys.length;
         }
       }
 
@@ -904,7 +677,7 @@ const Dashboard = () => {
 
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
-    if (file && file.type === 'text/csv') {
+    if (file && (file.type === 'text/csv' || file.name.toLowerCase().endsWith('.csv'))) {
       handleImportCSV(file);
     } else {
       alert('Por favor selecciona un archivo CSV válido');
@@ -1104,6 +877,7 @@ const Dashboard = () => {
           <ConversationsTab 
             conversations={conversations}
             loading={loading}
+            userId={user?.id}
             onOpenConversation={handleOpenConversation}
             onRefresh={getConversations}
             filterResponses={filterResponses}
@@ -1173,1785 +947,6 @@ const Dashboard = () => {
           pendingDuplicatesCount={pendingDuplicates.length}
         />
       )}
-    </div>
-  );
-};
-
-// Componente de Tab de Conversaciones
-const ConversationsTab = ({ 
-  conversations, 
-  loading, 
-  onOpenConversation, 
-  onRefresh, 
-  filterResponses, 
-  onToggleFilter, 
-  onUpdateStatus, 
-  expandedCommentId, 
-  onToggleComment, 
-  onUpdateComment,
-  selectionMode,
-  selectedConversations,
-  onToggleSelectionMode,
-  onToggleConversationSelection,
-  onSelectAll,
-  onArchiveSelected,
-  onUnarchiveSelected,
-  showArchived,
-  onToggleArchived
-}) => {
-  const [isRefreshing, setIsRefreshing] = React.useState(false);
-  const [selectedClientForDetails, setSelectedClientForDetails] = React.useState(null);
-  const [clientDetails, setClientDetails] = React.useState(null);
-  const [loadingDetails, setLoadingDetails] = React.useState(false);
-  
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    await onRefresh();
-    setTimeout(() => setIsRefreshing(false), 500);
-  };
-
-  const handleShowClientDetails = async (conversation) => {
-    setSelectedClientForDetails(conversation);
-    setLoadingDetails(true);
-    
-    try {
-      // Extraer el número de teléfono del ID de la conversación
-      const phoneNumber = conversation.id.replace('whatsapp:', '').replace('@c.us', '');
-      
-      // Buscar cliente en la base de datos por teléfono
-      const { data, error } = await supabase
-        .from('clientes')
-        .select('*')
-        .eq('TELEFONO', phoneNumber)
-        .single();
-      
-      if (error && error.code !== 'PGRST116') {
-        console.error('Error fetching client details:', error);
-      }
-      
-      setClientDetails(data || null);
-    } catch (error) {
-      console.error('Error:', error);
-      setClientDetails(null);
-    } finally {
-      setLoadingDetails(false);
-    }
-  };
-
-  const handleCloseClientDetails = () => {
-    setSelectedClientForDetails(null);
-    setClientDetails(null);
-  };
-  
-  // Filtrar conversaciones según el estado del filtro
-  const filteredConversations = filterResponses 
-    ? conversations.filter(c => c.hasResponse)
-    : conversations;
-  
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  const conversationsWithResponses = conversations.filter(c => c.hasResponse).length;
-
-  if (filteredConversations.length === 0) {
-    return (
-      <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
-        {/* Header con botones siempre visible */}
-        <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-          <div className="flex justify-between items-center mb-3">
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 flex items-center space-x-2">
-                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <span>Conversaciones</span>
-              </h3>
-              <p className="text-sm text-gray-600 mt-1">
-                {showArchived ? 'Conversaciones archivadas' : 'Conversaciones activas'}
-              </p>
-            </div>
-            <button
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2 disabled:opacity-50"
-            >
-              <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
-            </button>
-          </div>
-          
-          {/* Botones de filtro y selección */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={onToggleFilter}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                  filterResponses
-                    ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
-                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                </svg>
-                <span>{filterResponses ? 'Solo con respuestas' : 'Mostrar respuestas'}</span>
-              </button>
-
-              <button
-                onClick={onToggleSelectionMode}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                  selectionMode
-                    ? 'bg-indigo-500 text-white shadow-md hover:bg-indigo-600'
-                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                </svg>
-                <span>{selectionMode ? 'Cancelar selección' : 'Seleccionar'}</span>
-              </button>
-
-              <button
-                onClick={onToggleArchived}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                  showArchived
-                    ? 'bg-amber-500 text-white shadow-md hover:bg-amber-600'
-                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-                </svg>
-                <span>{showArchived ? 'Ver activas' : 'Ver archivadas'}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Mensaje de vacío */}
-        <div className="text-center py-16 px-6">
-          <div className="max-w-sm mx-auto">
-            <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg className="h-10 w-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              {showArchived ? 'No hay conversaciones archivadas' : filterResponses ? 'No hay conversaciones con respuestas' : 'No hay conversaciones'}
-            </h3>
-            <p className="text-sm text-gray-500">
-              {showArchived 
-                ? 'Aún no has archivado ninguna conversación.'
-                : filterResponses 
-                  ? 'No hay conversaciones donde los clientes hayan respondido.'
-                  : 'Las conversaciones aparecerán aquí cuando se reciban mensajes de tus clientes.'}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
-      {/* Header con botón de refrescar y filtro */}
-      <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-        <div className="flex justify-between items-center mb-3">
-          <div>
-            <h3 className="text-lg font-bold text-gray-900 flex items-center space-x-2">
-              <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <span>Conversaciones</span>
-            </h3>
-            <p className="text-sm text-gray-600 mt-1">
-              {conversationsWithResponses > 0 && (
-                <span className="font-semibold text-green-600">
-                  {conversationsWithResponses} con respuesta{conversationsWithResponses !== 1 ? 's' : ''}
-                </span>
-              )}
-              {conversationsWithResponses === 0 && 'Sin respuestas nuevas'}
-            </p>
-          </div>
-          <button
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center space-x-2 disabled:opacity-50"
-          >
-            <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
-          </button>
-        </div>
-        
-        {/* Botones de filtro y selección */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={onToggleFilter}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                filterResponses
-                  ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
-                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-              </svg>
-              <span>{filterResponses ? 'Solo con respuestas' : 'Mostrar respuestas'}</span>
-              {filterResponses && conversationsWithResponses > 0 && (
-                <span className="bg-white text-green-600 px-2 py-0.5 rounded-full text-xs font-bold">
-                  {conversationsWithResponses}
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={onToggleSelectionMode}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                selectionMode
-                  ? 'bg-indigo-500 text-white shadow-md hover:bg-indigo-600'
-                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-              </svg>
-              <span>{selectionMode ? 'Cancelar selección' : 'Seleccionar'}</span>
-            </button>
-
-            <button
-              onClick={onToggleArchived}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                showArchived
-                  ? 'bg-amber-500 text-white shadow-md hover:bg-amber-600'
-                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-              </svg>
-              <span>{showArchived ? 'Ver activas' : 'Ver archivadas'}</span>
-            </button>
-
-            {filterResponses && (
-              <span className="text-xs text-gray-600 animate-fadeIn">
-                Mostrando {filteredConversations.length} de {conversations.length} conversaciones
-              </span>
-            )}
-          </div>
-
-          {/* Botones de acción cuando hay selección */}
-          {selectionMode && selectedConversations.length > 0 && (
-            <div className="flex items-center space-x-2 animate-fadeIn">
-              <span className="text-sm text-gray-600 font-medium">
-                {selectedConversations.length} seleccionada{selectedConversations.length !== 1 ? 's' : ''}
-              </span>
-              <button
-                onClick={() => onSelectAll(filteredConversations)}
-                className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
-              >
-                Seleccionar todas
-              </button>
-              {!showArchived ? (
-                <button
-                  onClick={onArchiveSelected}
-                  className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center space-x-2"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-                  </svg>
-                  <span>Archivar</span>
-                </button>
-              ) : (
-                <button
-                  onClick={onUnarchiveSelected}
-                  className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center space-x-2"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                  </svg>
-                  <span>Desarchivar</span>
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
-            <tr>
-              {selectionMode && (
-                <th className="px-4 py-4 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider w-16">
-                  <input
-                    type="checkbox"
-                    checked={selectedConversations.length === filteredConversations.length && filteredConversations.length > 0}
-                    onChange={() => {
-                      if (selectedConversations.length === filteredConversations.length) {
-                        onSelectAll([]);
-                      } else {
-                        onSelectAll(filteredConversations);
-                      }
-                    }}
-                    className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                  />
-                </th>
-              )}
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Conversación
-              </th>
-              <th className="px-6 py-4 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Detalles
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Última actualización
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Comentario
-              </th>
-              <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Acciones
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {filteredConversations.map((conversation) => (
-              <React.Fragment key={conversation.id}>
-                <tr className={`transition-all duration-200 ${
-                  conversation.hasResponse 
-                    ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
-                    : 'hover:bg-blue-50'
-                } ${selectedConversations.includes(conversation.id) ? 'ring-2 ring-indigo-500' : ''}`}>
-                {selectionMode && (
-                  <td className="px-4 py-4 whitespace-nowrap text-center">
-                    <input
-                      type="checkbox"
-                      checked={selectedConversations.includes(conversation.id)}
-                      onChange={() => onToggleConversationSelection(conversation.id)}
-                      className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                    />
-                  </td>
-                )}
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="flex items-center">
-                    <div className={`flex-shrink-0 h-12 w-12 rounded-xl flex items-center justify-center shadow-md relative ${
-                      conversation.hasResponse
-                        ? 'bg-gradient-to-br from-green-400 to-green-600'
-                        : 'bg-gradient-to-br from-blue-400 to-blue-600'
-                    }`}>
-                      <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                      </svg>
-                      {conversation.hasResponse && (
-                        <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></div>
-                      )}
-                    </div>
-                    <div className="ml-4 flex-1">
-                      <div className="flex items-center space-x-2">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {conversation.title || 'Sin título'}
-                        </div>
-                        {conversation.hasResponse && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500 text-white shadow-sm animate-pulse">
-                            ¡Respondió!
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-500 flex items-center space-x-1 mt-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                        </svg>
-                        <span>{conversation.id.replace('whatsapp:', '').replace('@c.us', '')}</span>
-                      </div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-center">
-                  <button
-                    onClick={() => handleShowClientDetails(conversation)}
-                    className="inline-flex items-center space-x-2 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>Más detalles</span>
-                  </button>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                  <div className="flex items-center space-x-2">
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>
-                      {(() => {
-                        try {
-                          if (conversation.ultimaActualizacion) {
-                            const date = new Date(conversation.ultimaActualizacion);
-                            if (!isNaN(date.getTime())) {
-                              return date.toLocaleDateString('es-ES', {
-                                year: 'numeric',
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              });
-                            }
-                          }
-                          return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          });
-                        } catch (e) {
-                          return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          });
-                        }
-                      })()}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-4 py-4">
-                  {conversation.comentario || expandedCommentId === conversation.id ? (
-                    <div className="relative group">
-                      <div className="flex items-center space-x-2 bg-yellow-50 border-2 border-yellow-300 rounded-lg px-3 py-2 min-w-[200px] max-w-xs">
-                        <svg className="w-4 h-4 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                        </svg>
-                        <input
-                          type="text"
-                          value={conversation.comentario || ''}
-                          onChange={(e) => onUpdateComment(conversation.id, e.target.value)}
-                          className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 placeholder-gray-400"
-                          placeholder="Añadir comentario..."
-                          autoFocus={expandedCommentId === conversation.id}
-                        />
-                        <button
-                          onClick={() => {
-                            if (conversation.comentario) {
-                              onUpdateComment(conversation.id, '');
-                            }
-                            onToggleComment(null);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-yellow-600 hover:text-yellow-800"
-                          title={conversation.comentario ? "Borrar comentario" : "Cerrar"}
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => onToggleComment(conversation.id)}
-                      className="inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md bg-gray-100 hover:bg-gray-200 text-gray-600"
-                      title="Añadir comentario"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                      </svg>
-                    </button>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <div className="flex items-center justify-end space-x-2">
-                    <button
-                      onClick={() => onOpenConversation(conversation)}
-                      className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                    >
-                      <span>Ver mensajes</span>
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </button>
-                    
-                    {/* Botón Interesado */}
-                    <button
-                      onClick={() => onUpdateStatus(conversation.id, 'interesado')}
-                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
-                        conversation.estado === 'interesado'
-                          ? 'bg-gradient-to-r from-green-500 to-green-600 text-white'
-                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-                      }`}
-                      title="Marcar como interesado"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                    </button>
-                    
-                    {/* Botón Rechazado */}
-                    <button
-                      onClick={() => onUpdateStatus(conversation.id, 'rechazado')}
-                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
-                        conversation.estado === 'rechazado'
-                          ? 'bg-gradient-to-r from-red-500 to-red-600 text-white'
-                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-                      }`}
-                      title="Marcar como rechazado"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Modal de Detalles del Cliente */}
-      {selectedClientForDetails && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4 animate-fadeIn">
-          <div className="relative bg-white rounded-2xl shadow-2xl max-w-3xl w-full animate-slideUp border border-gray-200">
-            {/* Header */}
-            <div className="flex items-center justify-between p-6 border-b bg-gradient-to-r from-indigo-50 to-indigo-100">
-              <div className="flex items-center space-x-3">
-                <div className="w-12 h-12 bg-gradient-to-br from-indigo-400 to-indigo-600 rounded-xl flex items-center justify-center shadow-md">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900">Detalles del Cliente</h3>
-                  <p className="text-xs text-gray-600 mt-0.5">
-                    {selectedClientForDetails.id.replace('whatsapp:', '').replace('@c.us', '')}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={handleCloseClientDetails}
-                className="text-gray-400 hover:text-gray-600 hover:bg-white rounded-lg p-2 transition-all"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="p-6 max-h-[70vh] overflow-y-auto">
-              {loadingDetails ? (
-                <div className="flex justify-center items-center py-12">
-                  <div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-200 border-t-indigo-600"></div>
-                </div>
-              ) : clientDetails ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Nombre Completo</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['NOMBRE COMPLETO'] || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Nº Orden</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['N ORDEN'] || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Contrato</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.CONTRATO || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Servicio</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.SERVICIO || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Teléfono</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.TELEFONO || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Teléfono Fijo</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['TELEFONO FIJO'] || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg md:col-span-2">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Dirección</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.DIRECCION || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Código Postal</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails['CODIGO POSTAL'] || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Municipio</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">{clientDetails.MUNICIPIO || '-'}</p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Estado</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">
-                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                          clientDetails.ESTADO === 'ACTIVO' 
-                            ? 'bg-green-100 text-green-800' 
-                            : 'bg-gray-100 text-gray-800'
-                        }`}>
-                          {clientDetails.ESTADO || '-'}
-                        </span>
-                      </p>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <label className="text-xs font-semibold text-gray-600 uppercase">Estado Mensaje</label>
-                      <p className="text-sm font-medium text-gray-900 mt-1">
-                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                          clientDetails['ESTADO MENSAJE'] === 'ENVIADO' 
-                            ? 'bg-blue-100 text-blue-800' 
-                            : clientDetails['ESTADO MENSAJE'] === 'PENDIENTE'
-                            ? 'bg-yellow-100 text-yellow-800'
-                            : 'bg-gray-100 text-gray-800'
-                        }`}>
-                          {clientDetails['ESTADO MENSAJE'] || '-'}
-                        </span>
-                      </p>
-                    </div>
-                    {clientDetails.FECHA && (
-                      <div className="bg-gray-50 p-4 rounded-lg">
-                        <label className="text-xs font-semibold text-gray-600 uppercase">Fecha</label>
-                        <p className="text-sm font-medium text-gray-900 mt-1">
-                          {clientDetails.FECHA}
-                        </p>
-                      </div>
-                    )}
-                    {clientDetails['FECHA ENVIO PLANTILLA'] && (
-                      <div className="bg-gray-50 p-4 rounded-lg">
-                        <label className="text-xs font-semibold text-gray-600 uppercase">Fecha Envío Plantilla</label>
-                        <p className="text-sm font-medium text-gray-900 mt-1">
-                          {clientDetails['FECHA ENVIO PLANTILLA']}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <div className="w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg className="h-10 w-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
-                  </div>
-                  <p className="text-base text-gray-900 font-semibold">No se encontró información del cliente</p>
-                  <p className="mt-2 text-sm text-gray-600">Este número no está registrado en la base de datos de clientes</p>
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="flex justify-end p-6 border-t bg-gray-50">
-              <button
-                onClick={handleCloseClientDetails}
-                className="bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-              >
-                Cerrar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Componente de Tab de Clientes
-const ClientsTab = ({ clients, loading, onAddClient, onLoadMore, hasMore, loadingMore, searchTerm, onSearch, onOpenImportModal }) => {
-  const [localSearch, setLocalSearch] = useState(searchTerm);
-
-  const handleSearchChange = (e) => {
-    setLocalSearch(e.target.value);
-  };
-
-  const handleSearchSubmit = (e) => {
-    e.preventDefault();
-    onSearch(localSearch);
-  };
-
-  const handleClearSearch = () => {
-    setLocalSearch('');
-    onSearch('');
-  };
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
-      <div className="p-6 bg-gradient-to-r from-purple-50 to-purple-100 border-b border-purple-200">
-        <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
-          <div>
-            <h3 className="text-xl font-bold text-gray-900 flex items-center space-x-2">
-              <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-              <span>Gestión de Clientes</span>
-            </h3>
-            <p className="text-sm text-gray-600 mt-1">
-              {clients.length > 0 ? `Mostrando ${clients.length} cliente${clients.length !== 1 ? 's' : ''}` : 'No hay clientes'}
-              {searchTerm && ` con "${searchTerm}"`}
-            </p>
-          </div>
-          
-          <div className="flex flex-col sm:flex-row gap-3">
-            {/* Botón Subir Archivo */}
-            <button
-              onClick={onOpenImportModal}
-              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2.5 px-5 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center justify-center space-x-2 whitespace-nowrap"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-              </svg>
-              <span>Subir archivo</span>
-            </button>
-
-            {/* Buscador */}
-            <form onSubmit={handleSearchSubmit} className="relative flex-1 sm:flex-initial">
-              <input
-                type="text"
-                value={localSearch}
-                onChange={handleSearchChange}
-                placeholder="Buscar por nombre..."
-                className="w-full sm:w-64 pl-10 pr-10 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-              />
-              <svg 
-                className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400"
-                fill="none" 
-                stroke="currentColor" 
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              {localSearch && (
-                <button
-                  type="button"
-                  onClick={handleClearSearch}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              )}
-            </form>
-
-            {/* Botón Añadir */}
-            <button
-              onClick={onAddClient}
-              className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-semibold py-2.5 px-5 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 flex items-center justify-center space-x-2 whitespace-nowrap"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              <span>Añadir Cliente</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {clients.length === 0 ? (
-        <div className="text-center py-16 px-6">
-          <div className="max-w-sm mx-auto">
-            <div className="w-20 h-20 bg-gradient-to-br from-purple-100 to-purple-200 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg className="h-10 w-10 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              {searchTerm ? `No se encontraron clientes con "${searchTerm}"` : 'No hay clientes'}
-            </h3>
-            <p className="text-sm text-gray-500 mb-6">
-              {searchTerm ? 'Intenta con otro término de búsqueda' : 'Comienza añadiendo tu primer cliente.'}
-            </p>
-            {!searchTerm && (
-              <button
-                onClick={onAddClient}
-                className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 inline-flex items-center space-x-2"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-                <span>Añadir Cliente</span>
-              </button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
-            <tr>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Cliente
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Servicio
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Teléfono
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Estado
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                Estado Mensaje
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {clients.map((client) => (
-              <tr key={client['Nº ORDEN']} className="hover:bg-purple-50 transition-all duration-200">
-                <td className="px-6 py-4">
-                  <div className="flex items-center">
-                    <div className="flex-shrink-0 h-12 w-12 bg-gradient-to-br from-purple-400 to-purple-600 rounded-xl flex items-center justify-center shadow-md">
-                      <span className="text-white font-bold text-base">
-                        {client['NOMBRE COMPLETO']?.charAt(0).toUpperCase() || 'C'}
-                      </span>
-                    </div>
-                    <div className="ml-4">
-                      <div className="text-sm font-semibold text-gray-900">
-                        {client['NOMBRE COMPLETO'] || 'Sin nombre'}
-                      </div>
-                      <div className="text-xs text-gray-500 flex items-center space-x-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                        <span>{client.MUNICIPIO || 'Sin ubicación'}</span>
-                      </div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="text-sm font-medium text-gray-900">{client.SERVICIO || '-'}</div>
-                  <div className="text-xs text-gray-500">Contrato: {client.CONTRATO || '-'}</div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="flex items-center space-x-1 text-sm text-gray-900">
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                    </svg>
-                    <span>{client.TELEFONO || '-'}</span>
-                  </div>
-                  {client['TELEFONO FIJO'] && (
-                    <div className="flex items-center space-x-1 text-xs text-gray-500 mt-1">
-                      <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                      </svg>
-                      <span>Fijo: {client['TELEFONO FIJO']}</span>
-                    </div>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full shadow-sm ${
-                    client.ESTADO === 'ACTIVO' 
-                      ? 'bg-gradient-to-r from-green-400 to-green-500 text-white' 
-                      : 'bg-gradient-to-r from-gray-400 to-gray-500 text-white'
-                  }`}>
-                    {client.ESTADO || 'Sin estado'}
-                  </span>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full shadow-sm ${
-                    client['ESTADO MENSAJE'] === 'ENVIADO' 
-                      ? 'bg-gradient-to-r from-blue-400 to-blue-500 text-white' 
-                      : client['ESTADO MENSAJE'] === 'PENDIENTE'
-                      ? 'bg-gradient-to-r from-yellow-400 to-yellow-500 text-white'
-                      : 'bg-gradient-to-r from-gray-400 to-gray-500 text-white'
-                  }`}>
-                    {client['ESTADO MENSAJE'] || 'Sin enviar'}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Botón Cargar Más */}
-      {hasMore && (
-        <div className="p-6 text-center border-t border-gray-200 bg-gray-50">
-          <button
-            onClick={onLoadMore}
-            disabled={loadingMore}
-            className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 inline-flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-          >
-            {loadingMore ? (
-              <>
-                <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>Cargando...</span>
-              </>
-            ) : (
-              <>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-                <span>Cargar más clientes</span>
-              </>
-            )}
-          </button>
-        </div>
-      )}
-      </>
-      )}
-    </div>
-  );
-};
-
-// Modal de Conversación
-const ConversationModal = ({ conversation, messages, loading, onClose, onRefreshMessages }) => {
-  const [newMessage, setNewMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState('');
-
-  // Verificar si el último mensaje del usuario fue hace menos de 24 horas
-  const canSendMessage = () => {
-    if (!messages || messages.length === 0) return false;
-    
-    // Buscar el último mensaje del usuario (cliente)
-    const userMessages = messages.filter(msg => msg.sender_type === 'user');
-    if (userMessages.length === 0) return false;
-    
-    const lastUserMessage = userMessages[userMessages.length - 1];
-    const messageTime = new Date(lastUserMessage.created_at);
-    const now = new Date();
-    const hoursDiff = (now - messageTime) / (1000 * 60 * 60);
-    
-    return hoursDiff < 23;
-  };
-
-  const getTimeSinceLastMessage = () => {
-    if (!messages || messages.length === 0) return null;
-    
-    const userMessages = messages.filter(msg => msg.sender_type === 'user');
-    if (userMessages.length === 0) return null;
-    
-    const lastUserMessage = userMessages[userMessages.length - 1];
-    const messageTime = new Date(lastUserMessage.created_at);
-    const now = new Date();
-    const hoursDiff = (now - messageTime) / (1000 * 60 * 60);
-    
-    return Math.floor(hoursDiff);
-  };
-
-  const handleSendMessage = async () => {
-    if (!newMessage.trim()) return;
-    
-    if (!canSendMessage()) {
-      setSendError('Solo puedes responder a mensajes enviados hace menos de 24 horas.');
-      return;
-    }
-
-    setSending(true);
-    setSendError('');
-
-    try {
-      // Extraer el número de teléfono del ID de la conversación
-      const phoneNumber = conversation.id.replace('whatsapp:', '').replace('@c.us', '');
-      
-      const response = await fetch('https://n8n-n8n.2y9all.easypanel.host/webhook/bbb33573-d87c-4320-81b8-1167dd8f85c1', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          to: phoneNumber,
-          message: newMessage
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Error al enviar el mensaje');
-      }
-
-      // Limpiar el campo de texto después de enviar
-      setNewMessage('');
-      
-      // Esperar un momento y recargar los mensajes para mostrar el nuevo mensaje
-      setTimeout(() => {
-        if (onRefreshMessages) {
-          onRefreshMessages();
-        }
-      }, 1000);
-      
-      console.log('Mensaje enviado correctamente');
-      
-    } catch (error) {
-      console.error('Error sending message:', error);
-      setSendError('Error al enviar el mensaje. Por favor, intenta de nuevo.');
-    } finally {
-      setSending(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4 animate-fadeIn">
-      <div className="relative bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col animate-slideUp border border-gray-200">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b bg-gradient-to-r from-blue-50 to-blue-100">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-gradient-to-br from-blue-400 to-blue-600 rounded-xl flex items-center justify-center shadow-md">
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-gray-900">
-                {conversation.title || 'Conversación'}
-              </h3>
-              <p className="text-xs text-gray-600 font-mono mt-0.5">
-                ID: {conversation.id.substring(0, 12)}...
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 hover:bg-white rounded-lg p-2 transition-all"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 bg-gradient-to-br from-gray-50 to-blue-50">
-          {loading ? (
-            <div className="flex justify-center items-center py-12">
-              <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-200 border-t-blue-600"></div>
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
-                <svg className="h-10 w-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-              </div>
-              <p className="text-base text-gray-900 font-semibold">El cliente aún no ha respondido</p>
-              <p className="mt-2 text-sm text-gray-600">La plantilla de contacto ha sido enviada</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.sender_type === 'user' ? 'justify-start' : 'justify-end'} animate-fadeIn`}
-                >
-                  <div
-                    className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md ${
-                      message.sender_type === 'user'
-                        ? 'bg-white text-gray-900 border border-gray-200'
-                        : message.sender_type === 'Admin'
-                        ? 'bg-gradient-to-br from-purple-500 to-purple-600 text-white'
-                        : 'bg-gradient-to-br from-blue-500 to-blue-600 text-white'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2 mb-2">
-                      <span className={`text-xs font-bold ${
-                        message.sender_type === 'user' 
-                          ? 'text-gray-600' 
-                          : message.sender_type === 'Admin'
-                          ? 'text-purple-100'
-                          : 'text-blue-100'
-                      }`}>
-                        {message.sender_type === 'user' 
-                          ? '👤 Cliente' 
-                          : message.sender_type === 'Admin'
-                          ? '👨‍💼 Administrador'
-                          : '🤖 Asistente'}
-                      </span>
-                    </div>
-                    <p className="text-sm leading-relaxed">{message.content}</p>
-                    <p className={`text-xs mt-2 ${
-                      message.sender_type === 'user' 
-                        ? 'text-gray-500' 
-                        : message.sender_type === 'Admin'
-                        ? 'text-purple-200'
-                        : 'text-blue-200'
-                    }`}>
-                      {new Date(message.created_at).toLocaleString('es-ES', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        day: '2-digit',
-                        month: '2-digit',
-                        year: 'numeric'
-                      })}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Footer - Enviar mensaje */}
-        <div className="p-4 border-t bg-gray-50">
-          {!canSendMessage() && messages.length > 0 && (
-            <div className="mb-3 bg-yellow-50 border-2 border-yellow-300 rounded-lg p-3 flex items-start space-x-2">
-              <svg className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              <div>
-                <p className="text-sm font-semibold text-yellow-800">No puedes enviar mensajes</p>
-                <p className="text-xs text-yellow-700 mt-1">
-                  Solo puedes responder a mensajes del cliente enviados hace menos de 24 horas. 
-                  {getTimeSinceLastMessage() !== null && (
-                    <> Han pasado {getTimeSinceLastMessage()} horas desde el último mensaje del cliente.</>
-                  )}
-                </p>
-              </div>
-            </div>
-          )}
-          <div className="flex items-end space-x-2 mb-3">
-            <div className="flex-1">
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
-                Enviar mensaje
-              </label>
-              <input
-                type="text"
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleSendMessage();
-                  }
-                }}
-                placeholder={canSendMessage() ? "Escribe tu mensaje..." : "No disponible - Han pasado más de 24 horas"}
-                className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all shadow-sm text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
-                disabled={sending || !canSendMessage()}
-              />
-            </div>
-            <button
-              onClick={handleSendMessage}
-              disabled={sending || !newMessage.trim() || !canSendMessage()}
-              className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-            >
-              {sending ? (
-                <>
-                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                </>
-              ) : (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              )}
-              <span className="text-sm">Enviar</span>
-            </button>
-            <button
-              onClick={onClose}
-              className="bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white font-semibold px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg text-sm"
-            >
-              Cerrar
-            </button>
-          </div>
-          {sendError && (
-            <p className="text-xs text-red-600 flex items-center space-x-1">
-              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              <span>{sendError}</span>
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Modal para Añadir Cliente
-const AddClientModal = ({ onClose, onSave }) => {
-  const [formData, setFormData] = useState({
-    'Nº ORDEN': '',
-    'CONTRATO': '',
-    'SERVICIO': '',
-    'ESTADO': 'Pendiente de contactar con',
-    'NOMBRE COMPLETO': '',
-    'TELEFONO': '',
-    'TELEFONO FIJO': '',
-    'DIRECCION': '',
-    'CODIGO POSTAL': '',
-    'MUNICIPIO': ''
-    // FECHA, FECHA ENVIO PLANTILLA y ESTADO MENSAJE se autogeneran en Supabase
-  });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-
-    // Validaciones básicas
-    if (!formData['Nº ORDEN'] || !formData['NOMBRE COMPLETO']) {
-      setError('El número de orden y el nombre son obligatorios');
-      setLoading(false);
-      return;
-    }
-
-    const result = await onSave(formData);
-    
-    if (result.success) {
-      onClose();
-    } else {
-      setError(result.error || 'Error al guardar el cliente');
-    }
-    
-    setLoading(false);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4 animate-fadeIn">
-      <div className="relative bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto animate-slideUp border border-gray-200">
-        {/* Header */}
-        <div className="sticky top-0 bg-gradient-to-r from-purple-50 to-purple-100 border-b border-purple-200 px-6 py-5 flex items-center justify-between z-10 rounded-t-2xl">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-gradient-to-br from-purple-400 to-purple-600 rounded-xl flex items-center justify-center shadow-md">
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-              </svg>
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-gray-900">Añadir Nuevo Cliente</h3>
-              <p className="text-sm text-gray-600 mt-0.5">Complete los datos del cliente</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 hover:bg-white rounded-lg p-2 transition-all"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 bg-gradient-to-br from-white to-gray-50">
-          {error && (
-            <div className="mb-6 bg-gradient-to-r from-red-50 to-red-100 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg shadow-md flex items-start space-x-3">
-              <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-              </svg>
-              <p className="text-sm font-medium">{error}</p>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Nº ORDEN */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Nº Orden <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                name="Nº ORDEN"
-                value={formData['Nº ORDEN']}
-                onChange={handleChange}
-                required
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="123456"
-              />
-            </div>
-
-            {/* NOMBRE COMPLETO */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Nombre Completo <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                name="NOMBRE COMPLETO"
-                value={formData['NOMBRE COMPLETO']}
-                onChange={handleChange}
-                required
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="Juan Pérez García"
-              />
-            </div>
-
-            {/* CONTRATO */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Contrato
-              </label>
-              <input
-                type="text"
-                name="CONTRATO"
-                value={formData['CONTRATO']}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="CTR-2025-001"
-              />
-            </div>
-
-            {/* SERVICIO */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Servicio
-              </label>
-              <input
-                type="text"
-                name="SERVICIO"
-                value={formData['SERVICIO']}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="Fibra 600Mb"
-              />
-            </div>
-
-            {/* TELEFONO */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Teléfono
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                  </svg>
-                </div>
-                <input
-                  type="tel"
-                  name="TELEFONO"
-                  value={formData['TELEFONO']}
-                  onChange={handleChange}
-                  className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                  placeholder="612345678"
-                />
-              </div>
-            </div>
-
-            {/* TELEFONO FIJO */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Teléfono Fijo
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                  </svg>
-                </div>
-                <input
-                  type="tel"
-                  name="TELEFONO FIJO"
-                  value={formData['TELEFONO FIJO']}
-                  onChange={handleChange}
-                  className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                  placeholder="912345678"
-                />
-              </div>
-            </div>
-
-            {/* DIRECCION */}
-            <div className="md:col-span-2">
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Dirección
-              </label>
-              <input
-                type="text"
-                name="DIRECCION"
-                value={formData['DIRECCION']}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="Calle Principal 123, 2º A"
-              />
-            </div>
-
-            {/* CODIGO POSTAL */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Código Postal
-              </label>
-              <input
-                type="number"
-                name="CODIGO POSTAL"
-                value={formData['CODIGO POSTAL']}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="28001"
-              />
-            </div>
-
-            {/* MUNICIPIO */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Municipio
-              </label>
-              <input
-                type="text"
-                name="MUNICIPIO"
-                value={formData['MUNICIPIO']}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all shadow-sm"
-                placeholder="Madrid"
-              />
-            </div>
-
-            {/* ESTADO - No editable */}
-            <div className="md:col-span-2">
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Estado
-              </label>
-              <input
-                type="text"
-                value={formData['ESTADO']}
-                disabled
-                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg bg-gradient-to-r from-gray-50 to-gray-100 text-gray-600 cursor-not-allowed"
-              />
-              <div className="mt-2 flex items-start space-x-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <svg className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                </svg>
-                <p>Este campo se establece automáticamente como "Pendiente de contactar con"</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Footer Buttons */}
-          <div className="flex justify-end space-x-3 mt-8 pt-6 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onClose}
-              className="bg-white hover:bg-gray-50 text-gray-700 font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 border-2 border-gray-300 shadow-sm hover:shadow-md"
-              disabled={loading}
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center space-x-2"
-              disabled={loading}
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  <span>Guardando...</span>
-                </>
-              ) : (
-                <>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span>Guardar Cliente</span>
-                </>
-              )}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-};
-
-// Componente Modal de Importación CSV
-const ImportCSVModal = ({ onClose, onFileSelect, progress, onInsertValid, onDeleteDuplicates, pendingValidCount, pendingDuplicatesCount }) => {
-  const fileInputRef = React.useRef(null);
-  const [dragActive, setDragActive] = React.useState(false);
-
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
-        onFileSelect({ target: { files: [file] } });
-      } else {
-        alert('Por favor selecciona un archivo CSV válido');
-      }
-    }
-  };
-
-  const handleClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-6 py-5 rounded-t-2xl">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-white bg-opacity-20 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-              </div>
-              <h2 className="text-2xl font-bold">Importar Clientes desde CSV</h2>
-            </div>
-            <button
-              onClick={onClose}
-              className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 transition-all"
-            >
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="p-6">
-          {progress.status === 'idle' && (
-            <>
-              {/* Instrucciones */}
-              <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h3 className="font-semibold text-blue-900 mb-2 flex items-center">
-                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  Formato del archivo CSV
-                </h3>
-                <p className="text-sm text-blue-800 mb-2">El archivo debe contener las siguientes columnas:</p>
-                <ul className="text-sm text-blue-700 space-y-1 ml-4">
-                  <li>• <strong>Número</strong> (N° de orden - requerido)</li>
-                  <li>• <strong>Nombre del activo</strong> (Contrato)</li>
-                  <li>• <strong>Tipo de orden de trabajo</strong> (Servicio)</li>
-                  <li>• <strong>Detalle del estado</strong> (Estado)</li>
-                  <li>• <strong>Fecha</strong></li>
-                  <li>• <strong>Cuenta: Nombre de la cuenta</strong> (Nombre completo - requerido)</li>
-                  <li>• <strong>Principal</strong> (Teléfono)</li>
-                  <li>• <strong>Secundaria</strong> (Teléfono fijo)</li>
-                  <li>• <strong>Dirección completa: Address Name</strong></li>
-                  <li>• <strong>Zip</strong> (Código postal)</li>
-                  <li>• <strong>Ciudad</strong> (Municipio)</li>
-                </ul>
-              </div>
-
-              {/* Drag & Drop Area */}
-              <div
-                className={`border-3 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer ${
-                  dragActive
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
-                }`}
-                onDragEnter={handleDrag}
-                onDragLeave={handleDrag}
-                onDragOver={handleDrag}
-                onDrop={handleDrop}
-                onClick={handleClick}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".csv"
-                  onChange={onFileSelect}
-                  className="hidden"
-                />
-                <div className="flex flex-col items-center space-y-4">
-                  <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center">
-                    <svg className="w-10 h-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-lg font-semibold text-gray-700 mb-1">
-                      Arrastra tu archivo CSV aquí
-                    </p>
-                    <p className="text-sm text-gray-500">
-                      o haz clic para seleccionar
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
-                  >
-                    Seleccionar archivo
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-
-          {progress.status === 'processing' && (
-            <div className="text-center py-12">
-              <div className="inline-block animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mb-4"></div>
-              <p className="text-lg font-semibold text-gray-700">{progress.message}</p>
-              <p className="text-sm text-gray-500 mt-2">Por favor espera...</p>
-            </div>
-          )}
-
-          {progress.status === 'success' && progress.details && (
-            <div className="space-y-4">
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{progress.message}</h3>
-              </div>
-
-              {/* Resumen */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-blue-50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-blue-600">{progress.details.total}</p>
-                  <p className="text-sm text-blue-800">Total registros</p>
-                </div>
-                <div className="bg-green-50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-green-600">{progress.details.validCount || progress.details.inserted}</p>
-                  <p className="text-sm text-green-800">{progress.details.hasPendingValid ? 'Válidos' : 'Importados'}</p>
-                </div>
-                <div className="bg-yellow-50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-yellow-600">{progress.details.duplicates}</p>
-                  <p className="text-sm text-yellow-800">Duplicados</p>
-                </div>
-                <div className="bg-red-50 rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-red-600">{progress.details.errors}</p>
-                  <p className="text-sm text-red-800">Errores</p>
-                </div>
-              </div>
-
-              {/* Detalles de duplicados */}
-              {progress.details.duplicatesList && progress.details.duplicatesList.length > 0 && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 max-h-40 overflow-y-auto">
-                  <h4 className="font-semibold text-yellow-900 mb-2">Registros duplicados detectados:</h4>
-                  <ul className="text-sm text-yellow-800 space-y-1">
-                    {progress.details.duplicatesList.slice(0, 10).map((dup, idx) => (
-                      <li key={idx}>• {dup}</li>
-                    ))}
-                    {progress.details.duplicatesList.length > 10 && (
-                      <li className="font-semibold">... y {progress.details.duplicatesList.length - 10} más</li>
-                    )}
-                  </ul>
-                </div>
-              )}
-
-              {/* Detalles de errores */}
-              {progress.details.errorsList && progress.details.errorsList.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-h-40 overflow-y-auto">
-                  <h4 className="font-semibold text-red-900 mb-2">Errores encontrados:</h4>
-                  <ul className="text-sm text-red-800 space-y-1">
-                    {progress.details.errorsList.slice(0, 10).map((err, idx) => (
-                      <li key={idx}>• {err}</li>
-                    ))}
-                    {progress.details.errorsList.length > 10 && (
-                      <li className="font-semibold">... y {progress.details.errorsList.length - 10} más</li>
-                    )}
-                  </ul>
-                </div>
-              )}
-
-              {/* Botones de acción cuando hay pendientes */}
-              {(progress.details.hasPendingValid || progress.details.hasPendingDuplicates) && (
-                <div className="space-y-3 pt-2">
-                  {/* Botón para insertar solo los válidos (no duplicados) */}
-                  {pendingValidCount > 0 && progress.details.hasPendingValid && (
-                    <button
-                      onClick={onInsertValid}
-                      className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center space-x-2"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      <span>Importar solo válidos ({pendingValidCount})</span>
-                    </button>
-                  )}
-
-                  {/* Botón para eliminar duplicados e insertar todo */}
-                  {pendingDuplicatesCount > 0 && progress.details.hasPendingDuplicates && (
-                    <button
-                      onClick={onDeleteDuplicates}
-                      className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center space-x-2"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      <span>Reemplazar duplicados e importar todo ({pendingValidCount + pendingDuplicatesCount})</span>
-                    </button>
-                  )}
-
-                  {/* Botón cancelar */}
-                  <button
-                    onClick={onClose}
-                    className="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-3 rounded-lg transition-all duration-200"
-                  >
-                    Cancelar
-                  </button>
-                </div>
-              )}
-
-              {/* Botón cerrar cuando ya se completó la importación */}
-              {!progress.details.hasPendingValid && !progress.details.hasPendingDuplicates && (
-                <button
-                  onClick={onClose}
-                  className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
-                >
-                  Cerrar
-                </button>
-              )}
-            </div>
-          )}
-
-          {progress.status === 'error' && (
-            <div className="text-center py-12">
-              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">{progress.message}</h3>
-              {progress.details?.error && (
-                <p className="text-sm text-red-600 mb-6">{progress.details.error}</p>
-              )}
-              <button
-                onClick={onClose}
-                className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg"
-              >
-                Cerrar
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 };
