@@ -2,17 +2,17 @@ import React from 'react';
 import { supabase } from '../supabaseClient';
 import { fetchClientDetailsByPhone } from '../services/dashboardDataService';
 
-const ConversationsTab = ({ 
-  conversations, 
-  loading, 
+const ConversationsTab = ({
+  conversations,
+  loading,
   userId,
-  onOpenConversation, 
-  onRefresh, 
-  filterResponses, 
-  onToggleFilter, 
-  onUpdateStatus, 
-  expandedCommentId, 
-  onToggleComment, 
+  onOpenConversation,
+  onRefresh,
+  filterResponses,
+  onToggleFilter,
+  onUpdateStatus,
+  expandedCommentId,
+  onToggleComment,
   onUpdateComment,
   selectionMode,
   selectedConversations,
@@ -28,7 +28,7 @@ const ConversationsTab = ({
   const [selectedClientForDetails, setSelectedClientForDetails] = React.useState(null);
   const [clientDetails, setClientDetails] = React.useState(null);
   const [loadingDetails, setLoadingDetails] = React.useState(false);
-  
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await onRefresh();
@@ -38,7 +38,7 @@ const ConversationsTab = ({
   const handleShowClientDetails = async (conversation) => {
     setSelectedClientForDetails(conversation);
     setLoadingDetails(true);
-    
+
     try {
       // Extraer el número de teléfono del ID de la conversación
       const phoneNumber = conversation.id.replace('whatsapp:', '').replace('@c.us', '');
@@ -57,12 +57,12 @@ const ConversationsTab = ({
     setSelectedClientForDetails(null);
     setClientDetails(null);
   };
-  
+
   // Filtrar conversaciones según el estado del filtro
-  const filteredConversations = filterResponses 
+  const filteredConversations = filterResponses
     ? conversations.filter(c => c.hasResponse)
     : conversations;
-  
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -101,17 +101,16 @@ const ConversationsTab = ({
               <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
             </button>
           </div>
-          
+
           {/* Botones de filtro y selección */}
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <button
                 onClick={onToggleFilter}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                  filterResponses
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${filterResponses
                     ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
                     : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                }`}
+                  }`}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
@@ -121,11 +120,10 @@ const ConversationsTab = ({
 
               <button
                 onClick={onToggleSelectionMode}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                  selectionMode
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${selectionMode
                     ? 'bg-indigo-500 text-white shadow-md hover:bg-indigo-600'
                     : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                }`}
+                  }`}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
@@ -135,11 +133,10 @@ const ConversationsTab = ({
 
               <button
                 onClick={onToggleArchived}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                  showArchived
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${showArchived
                     ? 'bg-amber-500 text-white shadow-md hover:bg-amber-600'
                     : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                }`}
+                  }`}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
@@ -162,9 +159,9 @@ const ConversationsTab = ({
               {showArchived ? 'No hay conversaciones archivadas' : filterResponses ? 'No hay conversaciones con respuestas' : 'No hay conversaciones'}
             </h3>
             <p className="text-sm text-gray-500">
-              {showArchived 
+              {showArchived
                 ? 'Aún no has archivado ninguna conversación.'
-                : filterResponses 
+                : filterResponses
                   ? 'No hay conversaciones donde los clientes hayan respondido.'
                   : 'Las conversaciones aparecerán aquí cuando se reciban mensajes de tus clientes.'}
             </p>
@@ -206,17 +203,16 @@ const ConversationsTab = ({
             <span>{isRefreshing ? 'Actualizando...' : 'Actualizar'}</span>
           </button>
         </div>
-        
+
         {/* Botones de filtro y selección */}
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <button
               onClick={onToggleFilter}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                filterResponses
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${filterResponses
                   ? 'bg-green-500 text-white shadow-md hover:bg-green-600'
                   : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }`}
+                }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
@@ -231,11 +227,10 @@ const ConversationsTab = ({
 
             <button
               onClick={onToggleSelectionMode}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                selectionMode
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${selectionMode
                   ? 'bg-indigo-500 text-white shadow-md hover:bg-indigo-600'
                   : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }`}
+                }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
@@ -245,11 +240,10 @@ const ConversationsTab = ({
 
             <button
               onClick={onToggleArchived}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                showArchived
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${showArchived
                   ? 'bg-amber-500 text-white shadow-md hover:bg-amber-600'
                   : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }`}
+                }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
@@ -341,193 +335,189 @@ const ConversationsTab = ({
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredConversations.map((conversation) => (
               <React.Fragment key={conversation.id}>
-                <tr className={`transition-all duration-200 ${
-                  conversation.hasResponse 
-                    ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500' 
+                <tr className={`transition-all duration-200 ${conversation.hasResponse
+                    ? 'bg-green-50 hover:bg-green-100 border-l-4 border-green-500'
                     : 'hover:bg-blue-50'
-                } ${selectedConversations.includes(conversation.id) ? 'ring-2 ring-indigo-500' : ''}`}>
-                {selectionMode && (
-                  <td className="px-4 py-4 whitespace-nowrap text-center">
-                    <input
-                      type="checkbox"
-                      checked={selectedConversations.includes(conversation.id)}
-                      onChange={() => onToggleConversationSelection(conversation.id)}
-                      className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                    />
-                  </td>
-                )}
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="flex items-center">
-                    <div className={`flex-shrink-0 h-12 w-12 rounded-xl flex items-center justify-center shadow-md relative ${
-                      conversation.hasResponse
-                        ? 'bg-gradient-to-br from-green-400 to-green-600'
-                        : 'bg-gradient-to-br from-blue-400 to-blue-600'
-                    }`}>
-                      <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                      </svg>
-                      {conversation.hasResponse && (
-                        <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></div>
-                      )}
-                    </div>
-                    <div className="ml-4 flex-1">
-                      <div className="flex items-center space-x-2">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {conversation.title || 'Sin título'}
-                        </div>
+                  } ${selectedConversations.includes(conversation.id) ? 'ring-2 ring-indigo-500' : ''}`}>
+                  {selectionMode && (
+                    <td className="px-4 py-4 whitespace-nowrap text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedConversations.includes(conversation.id)}
+                        onChange={() => onToggleConversationSelection(conversation.id)}
+                        className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                      />
+                    </td>
+                  )}
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center">
+                      <div className={`flex-shrink-0 h-12 w-12 rounded-xl flex items-center justify-center shadow-md relative ${conversation.hasResponse
+                          ? 'bg-gradient-to-br from-green-400 to-green-600'
+                          : 'bg-gradient-to-br from-blue-400 to-blue-600'
+                        }`}>
+                        <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
                         {conversation.hasResponse && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500 text-white shadow-sm animate-pulse">
-                            ¡Respondió!
-                          </span>
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></div>
                         )}
                       </div>
-                      <div className="text-xs text-gray-500 flex items-center space-x-1 mt-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                        </svg>
-                        <span>{conversation.id.replace('whatsapp:', '').replace('@c.us', '')}</span>
+                      <div className="ml-4 flex-1">
+                        <div className="flex items-center space-x-2">
+                          <div className="text-sm font-semibold text-gray-900">
+                            {conversation.title || 'Sin título'}
+                          </div>
+                          {conversation.hasResponse && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500 text-white shadow-sm animate-pulse">
+                              ¡Respondió!
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 flex items-center space-x-1 mt-1">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                          </svg>
+                          <span>{conversation.id.replace('whatsapp:', '').replace('@c.us', '')}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-center">
-                  <button
-                    onClick={() => handleShowClientDetails(conversation)}
-                    className="inline-flex items-center space-x-2 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>Más detalles</span>
-                  </button>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                  <div className="flex items-center space-x-2">
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>
-                      {(() => {
-                        try {
-                          if (conversation.ultimaActualizacion) {
-                            const date = new Date(conversation.ultimaActualizacion);
-                            if (!isNaN(date.getTime())) {
-                              return date.toLocaleDateString('es-ES', {
-                                year: 'numeric',
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              });
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    <button
+                      onClick={() => handleShowClientDetails(conversation)}
+                      className="inline-flex items-center space-x-2 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>Más detalles</span>
+                    </button>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    <div className="flex items-center space-x-2">
+                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>
+                        {(() => {
+                          try {
+                            if (conversation.ultimaActualizacion) {
+                              const date = new Date(conversation.ultimaActualizacion);
+                              if (!isNaN(date.getTime())) {
+                                return date.toLocaleDateString('es-ES', {
+                                  year: 'numeric',
+                                  month: 'short',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                });
+                              }
                             }
+                            return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            });
+                          } catch (e) {
+                            return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            });
                           }
-                          return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          });
-                        } catch (e) {
-                          return new Date(conversation.updated_at).toLocaleDateString('es-ES', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          });
-                        }
-                      })()}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-4 py-4">
-                  {conversation.comentario || expandedCommentId === conversation.id ? (
-                    <div className="relative group">
-                      <div className="flex items-center space-x-2 bg-yellow-50 border-2 border-yellow-300 rounded-lg px-3 py-2 min-w-[200px] max-w-xs">
-                        <svg className="w-4 h-4 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        })()}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4">
+                    {conversation.comentario || expandedCommentId === conversation.id ? (
+                      <div className="relative group">
+                        <div className="flex items-center space-x-2 bg-yellow-50 border-2 border-yellow-300 rounded-lg px-3 py-2 min-w-[200px] max-w-xs">
+                          <svg className="w-4 h-4 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                          </svg>
+                          <input
+                            type="text"
+                            value={conversation.comentario || ''}
+                            onChange={(e) => onUpdateComment(conversation.id, e.target.value)}
+                            className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 placeholder-gray-400"
+                            placeholder="Añadir comentario..."
+                            autoFocus={expandedCommentId === conversation.id}
+                          />
+                          <button
+                            onClick={() => {
+                              if (conversation.comentario) {
+                                onUpdateComment(conversation.id, '');
+                              }
+                              onToggleComment(null);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity text-yellow-600 hover:text-yellow-800"
+                            title={conversation.comentario ? "Borrar comentario" : "Cerrar"}
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => onToggleComment(conversation.id)}
+                        className="inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md bg-gray-100 hover:bg-gray-200 text-gray-600"
+                        title="Añadir comentario"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
                         </svg>
-                        <input
-                          type="text"
-                          value={conversation.comentario || ''}
-                          onChange={(e) => onUpdateComment(conversation.id, e.target.value)}
-                          className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 placeholder-gray-400"
-                          placeholder="Añadir comentario..."
-                          autoFocus={expandedCommentId === conversation.id}
-                        />
-                        <button
-                          onClick={() => {
-                            if (conversation.comentario) {
-                              onUpdateComment(conversation.id, '');
-                            }
-                            onToggleComment(null);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-yellow-600 hover:text-yellow-800"
-                          title={conversation.comentario ? "Borrar comentario" : "Cerrar"}
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
+                      </button>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <div className="flex items-center justify-end space-x-2">
+                      <button
+                        onClick={() => onOpenConversation(conversation)}
+                        className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+                      >
+                        <span>Ver mensajes</span>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+
+                      {/* Botón Interesado */}
+                      <button
+                        onClick={() => onUpdateStatus(conversation.id, 'interesado')}
+                        className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${conversation.estado === 'interesado'
+                            ? 'bg-gradient-to-r from-green-500 to-green-600 text-white'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                          }`}
+                        title="Marcar como interesado"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      </button>
+
+                      {/* Botón Rechazado */}
+                      <button
+                        onClick={() => onUpdateStatus(conversation.id, 'rechazado')}
+                        className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${conversation.estado === 'rechazado'
+                            ? 'bg-gradient-to-r from-red-500 to-red-600 text-white'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                          }`}
+                        title="Marcar como rechazado"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => onToggleComment(conversation.id)}
-                      className="inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md bg-gray-100 hover:bg-gray-200 text-gray-600"
-                      title="Añadir comentario"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                      </svg>
-                    </button>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <div className="flex items-center justify-end space-x-2">
-                    <button
-                      onClick={() => onOpenConversation(conversation)}
-                      className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                    >
-                      <span>Ver mensajes</span>
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </button>
-                    
-                    {/* Botón Interesado */}
-                    <button
-                      onClick={() => onUpdateStatus(conversation.id, 'interesado')}
-                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
-                        conversation.estado === 'interesado'
-                          ? 'bg-gradient-to-r from-green-500 to-green-600 text-white'
-                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-                      }`}
-                      title="Marcar como interesado"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                    </button>
-                    
-                    {/* Botón Rechazado */}
-                    <button
-                      onClick={() => onUpdateStatus(conversation.id, 'rechazado')}
-                      className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
-                        conversation.estado === 'rechazado'
-                          ? 'bg-gradient-to-r from-red-500 to-red-600 text-white'
-                          : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-                      }`}
-                      title="Marcar como rechazado"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                </td>
-              </tr>
+                  </td>
+                </tr>
               </React.Fragment>
             ))}
           </tbody>
@@ -611,11 +601,10 @@ const ConversationsTab = ({
                     <div className="bg-gray-50 p-4 rounded-lg">
                       <label className="text-xs font-semibold text-gray-600 uppercase">Estado</label>
                       <p className="text-sm font-medium text-gray-900 mt-1">
-                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                          clientDetails.ESTADO === 'ACTIVO' 
-                            ? 'bg-green-100 text-green-800' 
+                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${clientDetails.ESTADO === 'ACTIVO'
+                            ? 'bg-green-100 text-green-800'
                             : 'bg-gray-100 text-gray-800'
-                        }`}>
+                          }`}>
                           {clientDetails.ESTADO || '-'}
                         </span>
                       </p>
@@ -623,13 +612,12 @@ const ConversationsTab = ({
                     <div className="bg-gray-50 p-4 rounded-lg">
                       <label className="text-xs font-semibold text-gray-600 uppercase">Estado Mensaje</label>
                       <p className="text-sm font-medium text-gray-900 mt-1">
-                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                          clientDetails['ESTADO MENSAJE'] === 'ENVIADO' 
-                            ? 'bg-blue-100 text-blue-800' 
+                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${clientDetails['ESTADO MENSAJE'] === 'ENVIADO'
+                            ? 'bg-blue-100 text-blue-800'
                             : clientDetails['ESTADO MENSAJE'] === 'PENDIENTE'
-                            ? 'bg-yellow-100 text-yellow-800'
-                            : 'bg-gray-100 text-gray-800'
-                        }`}>
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : 'bg-gray-100 text-gray-800'
+                          }`}>
                           {clientDetails['ESTADO MENSAJE'] || '-'}
                         </span>
                       </p>

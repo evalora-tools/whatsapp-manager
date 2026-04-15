@@ -182,20 +182,54 @@ export const fetchMessagesByConversation = async (supabase, conversationId) => {
 };
 
 export const fetchClientDetailsByPhone = async (supabase, userId, phoneNumber) => {
-  const { data, error } = await supabase
-    .from('clientes')
-    .select(
-      '"N ORDEN", "NOMBRE COMPLETO", CONTRATO, SERVICIO, TELEFONO, "TELEFONO FIJO", DIRECCION, "CODIGO POSTAL", MUNICIPIO, ESTADO, "ESTADO MENSAJE", FECHA, "FECHA ENVIO PLANTILLA"'
-    )
-    .eq('user_id', userId)
-    .eq('TELEFONO', phoneNumber)
-    .single();
+  // Generar variantes del número para manejar distintos formatos en BD
+  // Ej: "+34612345678" → ["34612345678", "+34612345678", "612345678", "0034612345678"]
+  const variants = new Set();
+  const raw = phoneNumber.replace(/\s+/g, '');
 
-  if (error && error.code !== 'PGRST116') {
-    throw error;
+  variants.add(raw); // tal cual llega (ej: "+34612345678")
+
+  // Sin símbolo +
+  const noPlus = raw.startsWith('+') ? raw.slice(1) : raw;
+  variants.add(noPlus); // "34612345678"
+
+  // Con prefijo 0034
+  variants.add('00' + noPlus); // "0034612345678"
+
+  // Número local de 9 dígitos (quitar código de país 34 si empieza por él)
+  if (noPlus.startsWith('34') && noPlus.length === 11) {
+    variants.add(noPlus.slice(2)); // "612345678"
   }
 
-  return data || null;
+  const phoneVariants = Array.from(variants);
+
+  const SELECT_COLS =
+    '"N ORDEN", "NOMBRE COMPLETO", CONTRATO, SERVICIO, TELEFONO, "TELEFONO FIJO", DIRECCION, "CODIGO POSTAL", MUNICIPIO, ESTADO, "ESTADO MENSAJE", FECHA, "FECHA ENVIO PLANTILLA"';
+
+  // Intentar primero por columna TELEFONO con todas las variantes
+  const { data: dataByPhone, error: errByPhone } = await supabase
+    .from('clientes')
+    .select(SELECT_COLS)
+    .eq('user_id', userId)
+    .in('TELEFONO', phoneVariants)
+    .limit(1)
+    .maybeSingle();
+
+  if (errByPhone && errByPhone.code !== 'PGRST116') throw errByPhone;
+  if (dataByPhone) return dataByPhone;
+
+  // Si no se encontró por TELEFONO, intentar por TELEFONO FIJO
+  const { data: dataByFixed, error: errByFixed } = await supabase
+    .from('clientes')
+    .select(SELECT_COLS)
+    .eq('user_id', userId)
+    .in('"TELEFONO FIJO"', phoneVariants)
+    .limit(1)
+    .maybeSingle();
+
+  if (errByFixed && errByFixed.code !== 'PGRST116') throw errByFixed;
+
+  return dataByFixed || null;
 };
 
 /**
